@@ -380,3 +380,53 @@ def test_confirm_racing_a_new_signup_does_not_deadlock(app, client):
             b = pool.submit(click, None)
             assert a.result().status_code == 202
             assert b.result().status_code == 200
+
+
+def test_parallel_guesses_cannot_beat_the_limit(client, app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.testclient import TestClient
+
+    signed_up(client, "parallel@example.com")
+
+    def guess(_):
+        with TestClient(app, client=("192.0.2.50", 5000)) as c:
+            return web_login(c, "parallel@example.com", "wrong password").status_code
+
+    with ThreadPoolExecutor(10) as pool:
+        codes = list(pool.map(guess, range(20)))
+    assert codes.count(401) == 5 and codes.count(429) == 15
+
+
+def test_ipv6_addresses_in_one_64_share_a_limit(client, app):
+    from fastapi.testclient import TestClient
+
+    signed_up(client, "v6@example.com")
+    for n in range(5):
+        with TestClient(app, client=(f"2001:db8:1:2::{n + 1}", 5000)) as c:
+            web_login(c, "v6@example.com", "wrong password")
+    with TestClient(app, client=("2001:db8:1:2::99", 5000)) as c:
+        assert web_login(c, "v6@example.com").status_code == 429
+
+
+def test_reset_lifts_every_pause_for_that_email(client):
+    signed_up(client, "typo@example.com")
+    for _ in range(5):
+        web_login(client, "typo@example.com", "wrong password")
+    client.post("/api/auth/forgot-password", json={"email": "typo@example.com"})
+    token = link_token(outbox("typo@example.com", "reset")[-1])
+    client.post("/api/auth/reset-password", json={"token": token, "password": "new password 2"})
+    assert web_login(client, "typo@example.com", "new password 2").status_code == 200
+
+
+def test_old_throttle_rows_are_purged(client, db):
+    from lumawen_api.auth import purge_throttle
+    from lumawen_api.models import LoginThrottle
+
+    web_login(client, "gone@example.com", "wrong password")
+    assert purge_throttle(db) == 0
+    db.execute(
+        update(LoginThrottle).values(window_started_at=datetime.now(UTC) - timedelta(days=2))
+    )
+    db.commit()
+    assert purge_throttle(db) == 2

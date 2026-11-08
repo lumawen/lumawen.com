@@ -6,6 +6,7 @@ Web browsers get an HttpOnly cookie. The Android/desktop app gets a short access
 Lock order, to avoid deadlocks: users row first, then email_tokens / auth_sessions rows.
 """
 
+import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
@@ -233,8 +234,18 @@ def _lock_email_token(db: Session, raw: str, purpose: str) -> tuple[EmailToken, 
 
 
 def _client_ip(request: Request) -> str:
-    # Behind nginx, uvicorn runs with --proxy-headers so this is the visitor's address.
-    return request.client.host if request.client else "unknown"
+    """The visitor's address. IPv6 is grouped by /64, since one home gets a whole /64.
+
+    Behind nginx, uvicorn runs with --proxy-headers so this is the visitor, not nginx.
+    """
+    host = request.client.host if request.client else "unknown"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if ip.version == 6:
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return host
 
 
 def _throttle_rules(email: str, ip: str) -> list[tuple[str, int, timedelta]]:
@@ -245,14 +256,14 @@ def _throttle_rules(email: str, ip: str) -> list[tuple[str, int, timedelta]]:
     ]
 
 
-def _throttled(db: Session, rules: list[tuple[str, int, timedelta]]) -> bool:
-    keys = [key for key, _, _ in rules]
-    locks = db.scalars(select(LoginThrottle.locked_until).where(LoginThrottle.key.in_(keys)))
-    return any(until is not None and until > _now() for until in locks)
+def _count_attempt(db: Session, rules: list[tuple[str, int, timedelta]]) -> bool:
+    """Count a sign-in attempt before checking the password. False means "paused, refuse".
 
-
-def _record_failure(db: Session, rules: list[tuple[str, int, timedelta]]) -> None:
+    Counting first (with the rows locked) means parallel guesses can't slip past the limit.
+    A successful sign-in takes its attempt back with _attempt_succeeded.
+    """
     now = _now()
+    allowed = True
     for key, limit, window in rules:
         db.execute(
             pg_insert(LoginThrottle)
@@ -260,6 +271,9 @@ def _record_failure(db: Session, rules: list[tuple[str, int, timedelta]]) -> Non
             .on_conflict_do_nothing(index_elements=["key"])
         )
         row = db.get(LoginThrottle, key, with_for_update=True, populate_existing=True)
+        if row.locked_until is not None and row.locked_until > now:
+            allowed = False
+            continue
         if row.window_started_at <= now - window:
             row.failures = 0
             row.window_started_at = now
@@ -268,10 +282,44 @@ def _record_failure(db: Session, rules: list[tuple[str, int, timedelta]]) -> Non
             row.locked_until = now + window
             row.failures = 0
             row.window_started_at = now
+    db.commit()
+    return allowed
 
 
-def _clear_failures(db: Session, rules: list[tuple[str, int, timedelta]]) -> None:
-    db.execute(delete(LoginThrottle).where(LoginThrottle.key == rules[0][0]))
+def _attempt_succeeded(db: Session, rules: list[tuple[str, int, timedelta]]) -> None:
+    ip_key, email_key = rules[0][0], rules[1][0]
+    db.execute(delete(LoginThrottle).where(LoginThrottle.key == ip_key))
+    db.execute(
+        update(LoginThrottle)
+        .where(LoginThrottle.key == email_key, LoginThrottle.failures > 0)
+        .values(failures=LoginThrottle.failures - 1)
+    )
+
+
+def _clear_throttle_for(db: Session, email: str) -> None:
+    db.execute(
+        delete(LoginThrottle).where(
+            (LoginThrottle.key == f"email:{email}")
+            | (
+                LoginThrottle.key.startswith("ip:")
+                & LoginThrottle.key.endswith(f"|{email}", autoescape=True)
+            )
+        )
+    )
+
+
+def purge_throttle(db: Session) -> int:
+    """Forget counters whose window and pause are over (called by the send worker)."""
+    now = _now()
+    cutoff = now - timedelta(days=1)
+    result = db.execute(
+        delete(LoginThrottle).where(
+            LoginThrottle.window_started_at < cutoff,
+            (LoginThrottle.locked_until.is_(None)) | (LoginThrottle.locked_until < now),
+        )
+    )
+    db.commit()
+    return result.rowcount
 
 
 # ---- sessions --------------------------------------------------------------------------------
@@ -410,16 +458,18 @@ def register(body: RegisterIn, db: DB) -> Status:
 @router.post("/confirm", response_model=Status)
 def confirm_email(body: ConfirmIn, db: DB) -> Status:
     token, user = _lock_email_token(db, body.token, "verify")
-    if user.email_verified_at is None:
-        if not verify_password(token.pending_password_hash, body.password):
-            db.rollback()
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "That isn't the password chosen for this sign-up. Try again, or sign up again.",
-            )
-        user.email_verified_at = _now()
-        user.password_hash = token.pending_password_hash
-        _expire_tokens(db, user, "verify")
+    if user.email_verified_at is not None:
+        db.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, BAD_LINK)
+    if not verify_password(token.pending_password_hash, body.password):
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That isn't the password chosen for this sign-up. Try again, or sign up again.",
+        )
+    user.email_verified_at = _now()
+    user.password_hash = token.pending_password_hash
+    _expire_tokens(db, user, "verify")
     token.used_at = _now()
     db.commit()
     return Status(status="confirmed")
@@ -431,7 +481,7 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
     email = normalize_email(body.email)
     rules = _throttle_rules(email, _client_ip(request))
-    if _throttled(db, rules):
+    if not _count_attempt(db, rules):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many wrong passwords. Try again later or reset your password.",
@@ -443,15 +493,13 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
     if user is not None and check is None:
         check = _latest_pending_hash(db, user)
     if not verify_password(check, body.password):
-        _record_failure(db, rules)
-        db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong email or password.")
     if user.password_hash is None:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Confirm your email first. Check your inbox for the link."
         )
 
-    _clear_failures(db, rules)
+    _attempt_succeeded(db, rules)
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
     tokens = _start_session(db, user, body.client, body.device_name)
@@ -560,7 +608,7 @@ def reset_password(body: ResetIn, db: DB) -> Status:
     _expire_tokens(db, user, "reset")
     _expire_tokens(db, user, "verify")
     _revoke_all(db, user)  # sign out every device
-    db.execute(delete(LoginThrottle).where(LoginThrottle.key == f"email:{user.email}"))
+    _clear_throttle_for(db, user.email)
     db.commit()
     return Status(status="password_changed")
 

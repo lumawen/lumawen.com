@@ -21,19 +21,22 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 
 | Route | What it does |
 | --- | --- |
-| `POST /auth/register` | Sends a confirm link. Always answers `202 check_email`, so it never reveals who has an account. |
-| `POST /auth/resend-confirmation` | Sends the confirm link again. |
-| `POST /auth/confirm` | Uses the link's token. The account's password is the one chosen with that link. |
+| `POST /auth/register` | Sends a confirm link. Always answers `202 check_email`, so it never reveals who has an account. Signing up again sends a new link. |
+| `POST /auth/confirm` | Needs the link's token **and** the password chosen at that sign-up, so nobody can claim your address with their own password. |
 | `POST /auth/login` | `client: "web"` sets an HttpOnly cookie; `client: "app"` returns an access token (15 min) and a refresh token (30 days). |
-| `POST /auth/refresh` | App only. Rotates both tokens; re-using an old refresh token ends that session. |
+| `POST /auth/refresh` | App only. Rotates both tokens. Re-using the previous token within 30 s gets `409` (a retry or race); later, it ends the session. |
 | `POST /auth/logout`, `/auth/logout-all` | Ends this session, or every session. |
 | `POST /auth/forgot-password`, `/auth/reset-password` | One-time reset link (60 min). A reset signs out every device. |
 | `GET /me` | The signed-in user. |
 | `GET /admin/users` | Admins only. |
 
-Five wrong passwords lock an account for 15 minutes. Each address gets at most 3 emails of a kind
-an hour. Tokens are stored only as SHA-256 hashes. Cookie-authenticated POSTs from another origin
-are refused. Per-IP limits come from nginx (`limit_req`) at deploy time.
+Five wrong passwords from one IP for one email pause that pair for 15 minutes, and 50 from anywhere
+pause the email for an hour (a reset lifts it). Unknown emails are counted the same way, and every
+sign-in does exactly one Argon2 check, so neither answers nor timing reveal who has an account.
+Each address gets at most 3 emails of a kind an hour. Tokens are stored only as SHA-256 hashes.
+Cookie-authenticated POSTs and web sign-ins from another origin are refused. Behind nginx, run
+uvicorn with `--proxy-headers --forwarded-allow-ips 127.0.0.1` so the visitor's IP is used; nginx
+`limit_req` adds per-IP limits at deploy time.
 
 Emails go into the `email_outbox` table and a worker sends them:
 

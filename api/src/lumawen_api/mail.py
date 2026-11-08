@@ -94,7 +94,11 @@ class SmtpSender:
     def __call__(self, msg: EmailMessage) -> None:
         if self.conn is None:
             self.conn = self._connect()
-        self.conn.send_message(msg)
+        try:
+            self.conn.send_message(msg)
+        except (smtplib.SMTPServerDisconnected, OSError):
+            self.conn = None  # reconnect for the next email
+            raise
 
     def close(self) -> None:
         if self.conn is not None:

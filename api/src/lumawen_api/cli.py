@@ -21,9 +21,9 @@ def create_admin(email: str, password: str | None) -> str:
     with _session_factory()() as db:
         user = db.scalar(select(User).where(User.email == email))
         created = user is None
+        if not password and (created or user.password_hash is None):
+            raise SystemExit("This account has no password yet, so give it one.")
         if created:
-            if not password:
-                raise SystemExit("A new account needs a password.")
             user = User(email=email)
             db.add(user)
         user.role = "admin"
@@ -62,8 +62,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "create-admin":
         with _session_factory()() as db:
-            exists = db.scalar(select(User.id).where(User.email == normalize_email(args.email)))
-        password = _read_password(args.password_stdin, required=exists is None)
+            current = db.scalar(
+                select(User.password_hash).where(User.email == normalize_email(args.email))
+            )
+        password = _read_password(args.password_stdin, required=current is None)
         if password is not None and len(password) < 10:
             raise SystemExit("Use at least 10 characters.")
         print(f"{create_admin(args.email, password)} admin {normalize_email(args.email)}")

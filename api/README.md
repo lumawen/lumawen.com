@@ -43,7 +43,8 @@ Google sign-in accepts only ID tokens issued to our own OAuth client IDs
 (`LUMAWEN_GOOGLE_CLIENT_IDS`) for a Google-verified email. It links to an existing account only
 when Google really owns the address (Gmail, or a Workspace domain via the `hd` claim); for any
 other address an existing account must sign in with its password. A password reset removes
-linked Google accounts. Google's signing keys are cached and fetched with a 5 s timeout.
+linked Google accounts. (Unlike register, a 409 here can tell someone holding a Google account
+for that exact address that a Lumawen account exists. Workspace alias domains don't auto-link.) Google's signing keys are cached and fetched with a 5 s timeout.
 
 Emails go into the `email_outbox` table and a worker sends them:
 

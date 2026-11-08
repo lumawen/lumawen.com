@@ -194,3 +194,23 @@ def test_password_reset_removes_linked_google_accounts(client, google_setup, db)
 def test_string_email_verified_is_refused(client, google_setup):
     google_setup["s"] = claims(verified="true")
     assert google_login(client, "s").status_code == 403
+
+
+def test_parallel_first_sign_ins_with_other_address_all_succeed(app, google_setup):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.testclient import TestClient
+
+    google_setup["t"] = claims(email="me@elsewhere.example")
+
+    def go(_):
+        with TestClient(app) as c:
+            return google_login(c, "t", kind="app").status_code
+
+    with ThreadPoolExecutor(6) as pool:
+        assert set(pool.map(go, range(6))) == {200}
+
+
+def test_non_string_claims_are_refused(client, google_setup):
+    google_setup["l"] = claims(email=["a@gmail.com"])
+    assert google_login(client, "l").status_code == 401

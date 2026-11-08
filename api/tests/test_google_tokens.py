@@ -47,12 +47,15 @@ class FakeGoogle:
         self.certs = {"kid1": cert.public_bytes(serialization.Encoding.PEM).decode()}
         self.fetches = 0
         self.down = False
+        self.html = False
 
     def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kwargs):
         assert timeout == 5
         self.fetches += 1
         if self.down:
             raise TransportError("connection timed out")
+        if self.html:
+            return FakeResponse(200, b"<html>Sign in to the wifi</html>")
         return FakeResponse(200, json.dumps(self.certs).encode(), {"cache-control": "max-age=600"})
 
     def token(self, **overrides) -> str:
@@ -112,3 +115,10 @@ def test_tampered_token_is_refused(client, fake_google):
 def test_google_unreachable_gives_503_not_500(client, fake_google):
     fake_google.down = True
     assert login(client, fake_google.token()).status_code == 503
+
+
+def test_bad_200_from_a_proxy_is_not_cached(client, fake_google):
+    fake_google.html = True
+    assert login(client, fake_google.token()).status_code == 401
+    fake_google.html = False
+    assert login(client, fake_google.token()).status_code == 200

@@ -67,7 +67,7 @@ fi
 
 say "Getting the code into $DIR"
 if [[ -d "$DIR/.git" ]]; then
-  as_user "git -C '$DIR' fetch --quiet origin main"
+  as_user "git -C '$DIR' fetch --quiet origin main && git -C '$DIR' checkout --quiet --detach origin/main"
 else
   as_user "git clone --quiet '$REPO' '$DIR'"
 fi
@@ -115,7 +115,8 @@ else
   done
   MAIL_BACKEND=smtp
   [[ -n "$SMTP_PASS" ]] || MAIL_BACKEND=console
-  TMP="$(mktemp "$DIR/api/.env.XXXXXX")"
+  TMP="$(mktemp "$DIR/api/.env.tmp.XXXXXX.env")"  # *.env is gitignored
+  trap 'rm -f "$TMP"' EXIT
   chmod 600 "$TMP"
   cat > "$TMP" <<ENV
 # Written by deploy/setup-server.sh. Never commit this file. Edit it, then:
@@ -132,6 +133,7 @@ LUMAWEN_SMTP_PASSWORD='$SMTP_PASS'
 ENV
   chown "$APP_USER": "$TMP"
   mv -f "$TMP" "$ENV_FILE"
+  trap - EXIT
 fi
 
 say "Web folder $WEB"

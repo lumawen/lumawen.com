@@ -15,8 +15,12 @@ WEB="/var/www/$HOST/html"
 export PATH="$HOME/.local/bin:$PATH"
 # pm2 usually comes from nvm, which non-interactive shells (ssh 'cmd', bash -c) don't load.
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-# shellcheck disable=SC1091
-[[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
+if [[ -s "$NVM_DIR/nvm.sh" ]]; then
+  set +eu
+  # shellcheck disable=SC1091
+  . "$NVM_DIR/nvm.sh" || true
+  set -eu
+fi
 command -v pm2 >/dev/null || { echo "pm2 not found (is nvm installed in $NVM_DIR?)" >&2; exit 1; }
 say() { printf '\n==> %s\n' "$*"; }
 

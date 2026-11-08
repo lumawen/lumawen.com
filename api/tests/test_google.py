@@ -16,7 +16,7 @@ def google_setup(monkeypatch):
     monkeypatch.setattr(config.get_settings(), "google_client_ids", f"{WEB_ID}, {ANDROID_ID}")
     tokens: dict[str, dict] = {}
 
-    def fake_fetch(token: str) -> dict:
+    def fake_fetch(token: str, audiences: list[str]) -> dict:
         if token not in tokens:
             raise ValueError("Token used too late / bad signature")
         return tokens[token]
@@ -57,12 +57,13 @@ def test_new_google_user_is_created_confirmed(client, google_setup, db):
 
 
 def test_android_app_gets_tokens(client, google_setup):
-    google_setup["a1"] = claims(aud=ANDROID_ID)
+    # Android tokens carry the web client ID as aud and the Android client ID as azp.
+    google_setup["a1"] = claims(aud=WEB_ID, azp=ANDROID_ID)
     body = google_login(client, "a1", kind="app").json()
     assert body["token_type"] == "bearer" and body["refresh_token"]
 
 
-def test_links_to_existing_confirmed_account(client, google_setup, db):
+def test_links_to_existing_confirmed_gmail_account(client, google_setup, db):
     signed_up(client, "Player@Gmail.com")
     google_setup["t"] = claims()
     assert google_login(client, "t").status_code == 200
@@ -143,3 +144,53 @@ def test_parallel_first_google_sign_ins(app, google_setup):
     with ThreadPoolExecutor(6) as pool:
         codes = list(pool.map(go, range(6)))
     assert set(codes) <= {200, 409} and 200 in codes
+    from lumawen_api.db import _session_factory
+
+    with _session_factory()() as db:
+        assert len(db.scalars(select(User)).all()) == 1
+        assert len(db.scalars(select(UserIdentity)).all()) == 1
+
+
+def test_workspace_account_links_when_google_hosts_the_domain(client, google_setup):
+    signed_up(client, "rae@luthiers.example")
+    google_setup["t"] = claims(email="rae@luthiers.example", hd="luthiers.example")
+    assert google_login(client, "t").status_code == 200
+
+
+def test_other_addresses_never_take_over_existing_accounts(client, google_setup, db):
+    """email_verified on a non-Gmail, non-Workspace address may be years old."""
+    signed_up(client, "ops@smallco.example")
+    from lumawen_api.cli import create_admin
+
+    create_admin("ops@smallco.example", None)
+    google_setup["old"] = claims(sub="old-owner", email="ops@smallco.example")
+    r = google_login(client, "old")
+    assert r.status_code == 409
+    assert db.scalars(select(UserIdentity)).all() == []
+    # A pending sign-up isn't cancelled either.
+    link = register(client, "new@smallco.example", "real owner pw")
+    google_setup["old2"] = claims(sub="old-owner-2", email="new@smallco.example")
+    assert google_login(client, "old2").status_code == 409
+    assert confirm(client, link, "real owner pw").status_code == 200
+
+
+def test_other_addresses_can_create_new_accounts(client, google_setup):
+    google_setup["t"] = claims(email="someone@elsewhere.example")
+    assert google_login(client, "t").status_code == 200
+
+
+def test_password_reset_removes_linked_google_accounts(client, google_setup, db):
+    from helpers import link_token, outbox
+
+    google_setup["t"] = claims(email="someone@elsewhere.example")
+    google_login(client, "t")
+    client.post("/api/auth/forgot-password", json={"email": "someone@elsewhere.example"})
+    token = link_token(outbox("someone@elsewhere.example", "reset")[-1])
+    client.post("/api/auth/reset-password", json={"token": token, "password": PASSWORD})
+    assert db.scalars(select(UserIdentity)).all() == []
+    assert google_login(client, "t").status_code == 409  # now it's the inbox owner's account
+
+
+def test_string_email_verified_is_refused(client, google_setup):
+    google_setup["s"] = claims(verified="true")
+    assert google_login(client, "s").status_code == 403

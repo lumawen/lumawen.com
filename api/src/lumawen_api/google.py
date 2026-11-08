@@ -4,19 +4,26 @@ The web dashboard and the Android app use Google's own sign-in to get an ID toke
 it here. We check it with Google's public keys and accept it only if it was issued to one of
 our OAuth client IDs (LUMAWEN_GOOGLE_CLIENT_IDS) for a verified email address.
 
-Linking rules:
+Google's "email_verified" only proves the address *now* for Gmail addresses and Google
+Workspace accounts (tokens with an "hd" claim). Other addresses were verified once, maybe years
+ago, by someone who may no longer own them. So:
+
 - A Google account already linked: sign in as that user.
-- Otherwise the Google email matches a user: Google has proved the address, so link and sign
-  in. If that account was never confirmed, it becomes confirmed and any pending sign-ups
-  (with passwords chosen by whoever signed up) are cancelled.
-- Otherwise: create a confirmed account with no password (they can set one later with
-  "forgot password").
+- Gmail or Workspace address matching a user: link and sign in. An unconfirmed account
+  becomes confirmed and its pending sign-ups (passwords chosen by whoever signed up) are
+  cancelled.
+- Any other address matching a user: refused. They sign in with their password instead.
+- No user with that email: create a confirmed account with no password. If the inbox's real
+  owner later resets the password, the reset also removes linked Google accounts.
 """
 
+import threading
+import time
 import uuid
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from google.auth import exceptions as google_exceptions
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
@@ -30,7 +37,44 @@ from .models import User, UserIdentity
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
-_transport = google_requests.Request()
+GOOGLE_OWNED_DOMAINS = {"gmail.com", "googlemail.com"}
+FETCH_TIMEOUT = 5  # seconds; google-auth's default is 120
+
+
+class CachingRequest:
+    """google-auth transport that caches Google's signing certs for as long as Google says.
+
+    Without it, every sign-in fetches the certs again (and can wait 120 s if Google is slow).
+    """
+
+    def __init__(self, inner=None):
+        self.inner = inner or google_requests.Request()
+        self._lock = threading.Lock()
+        self._cache: dict[str, tuple[float, object]] = {}
+
+    def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kwargs):
+        if method != "GET":
+            return self.inner(url, method, body, headers, timeout=FETCH_TIMEOUT, **kwargs)
+        with self._lock:
+            hit = self._cache.get(url)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+        response = self.inner(url, method, body, headers, timeout=FETCH_TIMEOUT, **kwargs)
+        if response.status == 200:
+            with self._lock:
+                self._cache[url] = (time.monotonic() + _max_age(response.headers), response)
+        return response
+
+
+def _max_age(headers) -> int:
+    for part in (headers or {}).get("cache-control", "").split(","):
+        name, _, value = part.strip().partition("=")
+        if name.lower() == "max-age" and value.isdigit():
+            return min(int(value), 6 * 3600)
+    return 3600
+
+
+_transport = CachingRequest()
 
 
 class GoogleIn(BaseModel):
@@ -39,9 +83,11 @@ class GoogleIn(BaseModel):
     device_name: str | None = Field(None, max_length=100)
 
 
-def fetch_claims(token: str) -> dict:
-    """Check the token's signature and expiry with Google's keys. Tests replace this."""
-    return id_token.verify_oauth2_token(token, _transport, audience=None)
+def fetch_claims(token: str, audiences: list[str]) -> dict:
+    """Check signature, expiry, issuer and audience with Google's keys. Some tests replace this."""
+    return id_token.verify_oauth2_token(
+        token, _transport, audience=audiences, clock_skew_in_seconds=10
+    )
 
 
 def _verified_claims(token: str) -> dict:
@@ -50,8 +96,12 @@ def _verified_claims(token: str) -> dict:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Google sign-in isn't set up.")
     bad = HTTPException(status.HTTP_401_UNAUTHORIZED, "Google sign-in failed. Try again.")
     try:
-        claims = fetch_claims(token)
-    except ValueError as exc:  # bad signature, expired, malformed
+        claims = fetch_claims(token, sorted(audiences))
+    except google_exceptions.TransportError as exc:  # couldn't reach Google for its keys
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Google sign-in is unavailable. Try again soon."
+        ) from exc
+    except (ValueError, google_exceptions.GoogleAuthError) as exc:  # forged, expired, wrong app
         raise bad from exc
     if claims.get("aud") not in audiences or claims.get("iss") not in GOOGLE_ISSUERS:
         raise bad
@@ -64,7 +114,17 @@ def _verified_claims(token: str) -> dict:
     email = normalize_email(str(claims["email"]))
     if not email.isascii() or len(email) > 320:
         raise bad
-    return {"sub": str(claims["sub"]), "email": email, "name": claims.get("name")}
+    domain = email.rpartition("@")[2]
+    hosted = claims.get("hd")
+    google_owned = domain in GOOGLE_OWNED_DOMAINS or (
+        isinstance(hosted, str) and hosted.lower() == domain
+    )
+    return {
+        "sub": str(claims["sub"]),
+        "email": email,
+        "name": claims.get("name"),
+        "google_owned": google_owned,
+    }
 
 
 @router.post("/google", response_model=LoginOut)
@@ -83,11 +143,18 @@ def google_sign_in(body: GoogleIn, request: Request, response: Response, db: DB)
         return sign_in(db, user, body.client, body.device_name, response)
 
     # Same pattern as register: create the row if missing, then lock it (users first).
-    db.execute(
+    created = db.scalar(
         pg_insert(User)
         .values(id=uuid.uuid4(), email=claims["email"], role="user")
         .on_conflict_do_nothing(index_elements=["email"])
+        .returning(User.id)
     )
+    if created is None and not claims["google_owned"]:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "There's already a Lumawen account with this email. Sign in with your password.",
+        )
     user = db.scalar(select(User).where(User.email == claims["email"]).with_for_update())
     if user.email_verified_at is None:
         user.email_verified_at = _now()

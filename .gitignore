@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+# Secrets and per-server files
+.env
+*.env
+!.env.example
+build-info.json
+# Flutter
+app/build/
+app/.dart_tool/
+# OS
+.DS_Store

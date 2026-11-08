@@ -33,7 +33,7 @@ def test_alembic_accepts_percent_encoded_password(database_url):
             timeout=60,
         )
         assert result.returncode == 0, result.stderr
-        assert "0001" in result.stdout
+        assert "(head)" in result.stdout
     finally:
         with admin.connect() as conn:
             conn.execute(text(f'DROP OWNED BY "{role}"'))

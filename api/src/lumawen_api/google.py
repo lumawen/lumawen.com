@@ -17,6 +17,7 @@ ago, by someone who may no longer own them. So:
   owner later resets the password, the reset also removes linked Google accounts.
 """
 
+import json
 import threading
 import time
 import uuid
@@ -60,10 +61,18 @@ class CachingRequest:
             if hit and hit[0] > time.monotonic():
                 return hit[1]
         response = self.inner(url, method, body, headers, timeout=FETCH_TIMEOUT, **kwargs)
-        if response.status == 200:
+        if response.status == 200 and _is_json_object(response.data):
             with self._lock:
                 self._cache[url] = (time.monotonic() + _max_age(response.headers), response)
         return response
+
+
+def _is_json_object(data) -> bool:
+    """Only cache real key sets, not e.g. a proxy's HTML page served with status 200."""
+    try:
+        return isinstance(json.loads(data), dict)
+    except (TypeError, ValueError):
+        return False
 
 
 def _max_age(headers) -> int:
@@ -105,7 +114,9 @@ def _verified_claims(token: str) -> dict:
         raise bad from exc
     if claims.get("aud") not in audiences or claims.get("iss") not in GOOGLE_ISSUERS:
         raise bad
-    if not claims.get("sub") or not claims.get("email"):
+    if not isinstance(claims.get("sub"), str) or not isinstance(claims.get("email"), str):
+        raise bad
+    if not claims["sub"] or not claims["email"]:
         raise bad
     if claims.get("email_verified") is not True:
         raise HTTPException(
@@ -127,20 +138,22 @@ def _verified_claims(token: str) -> dict:
     }
 
 
+def _linked_user(db, sub: str) -> User | None:
+    identity = db.scalar(
+        select(UserIdentity).where(UserIdentity.provider == "google", UserIdentity.subject == sub)
+    )
+    return None if identity is None else db.get(User, identity.user_id)
+
+
 @router.post("/google", response_model=LoginOut)
 def google_sign_in(body: GoogleIn, request: Request, response: Response, db: DB) -> LoginOut:
     if body.client == "web" and not _same_origin(request):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
     claims = _verified_claims(body.id_token)
 
-    identity = db.scalar(
-        select(UserIdentity).where(
-            UserIdentity.provider == "google", UserIdentity.subject == claims["sub"]
-        )
-    )
-    if identity is not None:
-        user = db.get(User, identity.user_id)
-        return sign_in(db, user, body.client, body.device_name, response)
+    linked_user = _linked_user(db, claims["sub"])
+    if linked_user is not None:
+        return sign_in(db, linked_user, body.client, body.device_name, response)
 
     # Same pattern as register: create the row if missing, then lock it (users first).
     created = db.scalar(
@@ -151,6 +164,10 @@ def google_sign_in(body: GoogleIn, request: Request, response: Response, db: DB)
     )
     if created is None and not claims["google_owned"]:
         db.rollback()
+        # A parallel first sign-in (double tap, app retry) may have just created and linked it.
+        linked_user = _linked_user(db, claims["sub"])
+        if linked_user is not None:
+            return sign_in(db, linked_user, body.client, body.device_name, response)
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "There's already a Lumawen account with this email. Sign in with your password.",

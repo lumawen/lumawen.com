@@ -2,7 +2,16 @@
 
 from datetime import UTC, datetime, timedelta
 
-from helpers import PASSWORD, app_login, link_token, outbox, register, signed_up, web_login
+from helpers import (
+    PASSWORD,
+    app_login,
+    confirm,
+    link_token,
+    outbox,
+    register,
+    signed_up,
+    web_login,
+)
 from sqlalchemy import select, update
 
 from lumawen_api.models import AuthSession, EmailToken, User
@@ -14,7 +23,7 @@ def test_register_confirm_login_me_logout(client):
     assert email.subject == "Confirm your Lumawen account"
     assert "/dashboard/confirm?token=" in email.body_text
 
-    r = client.post("/api/auth/confirm", json={"token": token})
+    r = confirm(client, token)
     assert r.json() == {"status": "confirmed"}
 
     r = web_login(client, "player@example.com")
@@ -59,45 +68,39 @@ def test_register_answers_the_same_for_existing_accounts(client):
 
 
 def test_someone_else_cannot_preset_the_password(client):
-    """An attacker signs up with the victim's email first; the victim's own link wins."""
-    register(client, "victim@example.com", "attacker password")
-    victim_token = register(client, "victim@example.com", "victim password")
-    assert client.post("/api/auth/confirm", json={"token": victim_token}).status_code == 200
+    """An attacker signs up with the victim's address, before or after the victim."""
+    attacker_first = register(client, "victim@example.com", "attacker password")
+    victim = register(client, "victim@example.com", "victim password")
+    attacker_last = register(client, "victim@example.com", "attacker password")
+    # The attacker's links (in the victim's inbox) don't work with the victim's password...
+    assert confirm(client, attacker_first, "victim password").status_code == 400
+    assert confirm(client, attacker_last, "victim password").status_code == 400
+    # ...and the victim's own link still works, with the victim's password only.
+    assert confirm(client, victim, "attacker password").status_code == 400
+    assert confirm(client, victim, "victim password").status_code == 200
     assert web_login(client, "victim@example.com", "attacker password").status_code == 401
     assert web_login(client, "victim@example.com", "victim password").status_code == 200
-
-
-def test_older_confirm_link_stops_working(client):
-    first = register(client, "twice@example.com", "first password")
-    register(client, "twice@example.com", "second password")
-    assert client.post("/api/auth/confirm", json={"token": first}).status_code == 400
+    # Once confirmed, the attacker's links are dead.
+    assert confirm(client, attacker_last, "attacker password").status_code == 400
 
 
 def test_confirm_link_is_single_use_and_expires(client, db):
     token = register(client, "once@example.com")
-    assert client.post("/api/auth/confirm", json={"token": token}).status_code == 200
-    assert client.post("/api/auth/confirm", json={"token": token}).status_code == 400
+    assert confirm(client, token).status_code == 200
+    assert confirm(client, token).status_code == 400
 
     token = register(client, "late@example.com")
     db.execute(update(EmailToken).values(expires_at=datetime.now(UTC) - timedelta(seconds=1)))
     db.commit()
-    assert client.post("/api/auth/confirm", json={"token": token}).status_code == 400
-    assert client.post("/api/auth/confirm", json={"token": "nonsense"}).status_code == 400
+    assert confirm(client, token).status_code == 400
+    assert confirm(client, "nonsense").status_code == 400
 
 
-def test_resend_confirmation(client):
-    register(client, "resend@example.com")
-    r = client.post("/api/auth/resend-confirmation", json={"email": "resend@example.com"})
-    assert r.status_code == 202
-    emails = outbox("resend@example.com", "confirm")
-    assert len(emails) == 2
-    assert (
-        client.post("/api/auth/confirm", json={"token": link_token(emails[-1])}).status_code == 200
-    )
-    assert web_login(client, "resend@example.com").status_code == 200
-    # Unknown addresses get the same answer and no email.
-    r = client.post("/api/auth/resend-confirmation", json={"email": "nobody@example.com"})
-    assert r.status_code == 202 and outbox("nobody@example.com") == []
+def test_signing_up_again_resends_the_link(client):
+    register(client, "again@example.com")
+    token = register(client, "again@example.com")
+    assert len(outbox("again@example.com", "confirm")) == 2
+    assert confirm(client, token).status_code == 200
 
 
 def test_wrong_password_and_unknown_email_look_the_same(client):
@@ -108,12 +111,61 @@ def test_wrong_password_and_unknown_email_look_the_same(client):
     assert wrong.json() == unknown.json()
 
 
-def test_lockout_after_repeated_wrong_passwords(client):
+def test_throttle_looks_the_same_for_real_and_unknown_emails(client):
     signed_up(client, "locked@example.com")
-    for _ in range(5):
-        assert web_login(client, "locked@example.com", "wrong password").status_code == 401
-    r = web_login(client, "locked@example.com")
-    assert r.status_code == 429
+    real = [web_login(client, "locked@example.com", "wrong password").status_code for _ in range(6)]
+    fake = [web_login(client, "ghost@example.com", "wrong password").status_code for _ in range(6)]
+    assert real == fake == [401] * 5 + [429]
+
+
+def test_throttle_is_per_ip_so_others_can_still_sign_in(client, app):
+    from fastapi.testclient import TestClient
+
+    signed_up(client, "target@example.com")
+    with TestClient(app, client=("203.0.113.9", 5000)) as attacker:
+        for _ in range(6):
+            web_login(attacker, "target@example.com", "wrong password")
+        assert web_login(attacker, "target@example.com").status_code == 429
+    assert web_login(client, "target@example.com").status_code == 200
+
+
+def test_throttle_per_email_across_many_ips(client, app, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from lumawen_api import config
+
+    monkeypatch.setattr(config.get_settings(), "max_failed_per_email", 4)
+    signed_up(client, "spread@example.com")
+    for n in range(4):
+        with TestClient(app, client=(f"198.51.100.{n}", 5000)) as c:
+            assert web_login(c, "spread@example.com", "wrong password").status_code == 401
+    assert web_login(client, "spread@example.com").status_code == 429
+    # A password reset lifts the per-email pause.
+    client.post("/api/auth/forgot-password", json={"email": "spread@example.com"})
+    token = link_token(outbox("spread@example.com", "reset")[-1])
+    client.post("/api/auth/reset-password", json={"token": token, "password": "new password 1"})
+    assert web_login(client, "spread@example.com", "new password 1").status_code == 200
+
+
+def test_unconfirmed_login_hint_needs_the_right_password(client):
+    register(client, "pending@example.com")
+    assert web_login(client, "pending@example.com").status_code == 403
+    assert web_login(client, "pending@example.com", "wrong password").status_code == 401
+
+
+def test_login_from_another_site_is_blocked(client):
+    signed_up(client, "origin@example.com")
+    r = client.post(
+        "/api/auth/login",
+        json={"email": "origin@example.com", "password": PASSWORD},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+
+
+def test_non_ascii_email_is_refused(client):
+    r = client.post("/api/auth/register", json={"email": "ÄBC@example.com", "password": PASSWORD})
+    assert r.status_code == 422
 
 
 def test_password_rules(client):
@@ -140,12 +192,46 @@ def test_app_tokens_and_refresh_rotation(client):
     new_auth = {"Authorization": f"Bearer {new['access_token']}"}
     assert client.get("/api/me", headers=new_auth).status_code == 200
 
-    # Re-using the old refresh token looks like theft: the whole session ends.
+    # Re-using it right away is a retry or race: refused, but the session lives on.
+    r = client.post("/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert r.status_code == 409
+    assert client.get("/api/me", headers=new_auth).status_code == 200
+
+
+def test_old_refresh_token_coming_back_later_ends_the_session(client, db):
+    signed_up(client, "stolen@example.com")
+    tokens = app_login(client, "stolen@example.com")
+    client.cookies.clear()
+    new = client.post("/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).json()
+    db.execute(update(AuthSession).values(rotated_at=datetime.now(UTC) - timedelta(minutes=5)))
+    db.commit()
     r = client.post("/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert r.status_code == 401
+    new_auth = {"Authorization": f"Bearer {new['access_token']}"}
     assert client.get("/api/me", headers=new_auth).status_code == 401
     r = client.post("/api/auth/refresh", json={"refresh_token": new["refresh_token"]})
     assert r.status_code == 401
+
+
+def test_parallel_refreshes_keep_the_session(client, app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.testclient import TestClient
+
+    signed_up(client, "race@example.com")
+    tokens = app_login(client, "race@example.com")
+
+    def go(_):
+        with TestClient(app) as c:
+            return c.post("/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(go, range(4)))
+    codes = sorted(r.status_code for r in results)
+    assert codes == [200, 409, 409, 409]
+    winner = next(r for r in results if r.status_code == 200).json()
+    r = client.post("/api/auth/refresh", json={"refresh_token": winner["refresh_token"]})
+    assert r.status_code == 200
 
 
 def test_expired_access_token(client, db):
@@ -191,8 +277,6 @@ def test_logout_all_ends_every_device(client):
 def test_forgot_and_reset_password(client, db):
     signed_up(client, "forgot@example.com")
     tokens = app_login(client, "forgot@example.com")
-    for _ in range(5):
-        web_login(client, "forgot@example.com", "wrong password")  # now locked
 
     r = client.post("/api/auth/forgot-password", json={"email": "Forgot@Example.com"})
     assert r.status_code == 202
@@ -240,8 +324,59 @@ def test_tokens_are_stored_hashed(client, db):
     token = register(client, "hashed@example.com")
     stored = db.scalars(select(EmailToken.token_hash)).all()
     assert token not in stored
-    client.post("/api/auth/confirm", json={"token": token})
+    confirm(client, token)
     raw = web_login(client, "hashed@example.com").cookies["lumawen_session"]
     assert raw not in db.scalars(select(AuthSession.token_hash)).all()
     user = db.scalar(select(User).where(User.email == "hashed@example.com"))
     assert user.password_hash.startswith("$argon2id$")
+
+
+def test_only_the_newest_reset_link_works(client):
+    signed_up(client, "two-resets@example.com")
+    client.post("/api/auth/forgot-password", json={"email": "two-resets@example.com"})
+    client.post("/api/auth/forgot-password", json={"email": "two-resets@example.com"})
+    first, second = (link_token(e) for e in outbox("two-resets@example.com", "reset"))
+    body = {"password": "another new password"}
+    assert client.post("/api/auth/reset-password", json={"token": first, **body}).status_code == 400
+    assert (
+        client.post("/api/auth/reset-password", json={"token": second, **body}).status_code == 200
+    )
+
+
+def test_parallel_signups_never_fail(app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.testclient import TestClient
+
+    def go(_):
+        with TestClient(app) as c:
+            return c.post(
+                "/api/auth/register", json={"email": "same@example.com", "password": PASSWORD}
+            ).status_code
+
+    with ThreadPoolExecutor(8) as pool:
+        assert set(pool.map(go, range(8))) == {202}
+
+
+def test_confirm_racing_a_new_signup_does_not_deadlock(app, client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.testclient import TestClient
+
+    for n in range(5):
+        email = f"deadlock{n}@example.com"
+        token = register(client, email)
+
+        def sign_up_again(_, email=email):
+            with TestClient(app) as c:
+                return c.post("/api/auth/register", json={"email": email, "password": PASSWORD})
+
+        def click(_, token=token):
+            with TestClient(app) as c:
+                return confirm(c, token)
+
+        with ThreadPoolExecutor(2) as pool:
+            a = pool.submit(sign_up_again, None)
+            b = pool.submit(click, None)
+            assert a.result().status_code == 202
+            assert b.result().status_code == 200

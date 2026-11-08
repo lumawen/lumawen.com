@@ -1,4 +1,4 @@
-"""accounts: users, sessions, email tokens and the email outbox
+"""accounts: users, sessions, email tokens, login throttle and the email outbox
 
 Revision ID: 0002
 Revises: 0001
@@ -32,8 +32,6 @@ def upgrade() -> None:
         sa.Column("display_name", sa.String(80)),
         sa.Column("role", sa.String(20), nullable=False, server_default="user"),
         _ts("email_verified_at"),
-        sa.Column("failed_logins", sa.Integer, nullable=False, server_default="0"),
-        _ts("locked_until"),
         _ts("created_at", nullable=False, now=True),
         _ts("updated_at", nullable=False, now=True),
         sa.CheckConstraint("email = lower(email)", name="users_email_lowercase"),
@@ -55,6 +53,7 @@ def upgrade() -> None:
         sa.Column("previous_token_hash", sa.String(64), index=True),
         sa.Column("access_hash", sa.String(64), unique=True),
         _ts("access_expires_at"),
+        _ts("rotated_at"),
         _ts("created_at", nullable=False, now=True),
         _ts("last_used_at"),
         _ts("expires_at", nullable=False),
@@ -78,6 +77,13 @@ def upgrade() -> None:
         _ts("expires_at", nullable=False),
         _ts("used_at"),
         sa.CheckConstraint("purpose IN ('verify', 'reset')", name="email_tokens_purpose_valid"),
+    )
+    op.create_table(
+        "login_throttle",
+        sa.Column("key", sa.String(400), primary_key=True),
+        sa.Column("failures", sa.Integer, nullable=False, server_default="0"),
+        _ts("window_started_at", nullable=False),
+        _ts("locked_until"),
     )
     op.create_table(
         "email_outbox",
@@ -106,6 +112,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("email_outbox")
+    op.drop_table("login_throttle")
     op.drop_table("email_tokens")
     op.drop_table("auth_sessions")
     op.drop_table("users")

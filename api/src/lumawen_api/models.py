@@ -4,7 +4,19 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,6 +39,10 @@ class AppSetting(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("email = lower(email)", name="users_email_lowercase"),
+        CheckConstraint("role IN ('user', 'admin')", name="users_role_valid"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)  # lowercase
@@ -35,8 +51,6 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(80))
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    failed_logins: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -51,6 +65,9 @@ class AuthSession(Base):
     """One signed-in device. Web: token_hash is the cookie. App: refresh + short access token."""
 
     __tablename__ = "auth_sessions"
+    __table_args__ = (
+        CheckConstraint("client IN ('web', 'app')", name="auth_sessions_client_valid"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -62,6 +79,7 @@ class AuthSession(Base):
     previous_token_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     access_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
     access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -76,6 +94,9 @@ class EmailToken(Base):
     """One-time link sent by email: confirm an address (verify) or reset a password (reset)."""
 
     __tablename__ = "email_tokens"
+    __table_args__ = (
+        CheckConstraint("purpose IN ('verify', 'reset')", name="email_tokens_purpose_valid"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -95,6 +116,12 @@ class OutboxEmail(Base):
     """Email waiting to be sent. The send worker delivers it (lumawen-admin send-emails)."""
 
     __tablename__ = "email_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'failed')", name="email_outbox_status_valid"
+        ),
+        Index("email_outbox_due", "send_after", postgresql_where=text("status = 'pending'")),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     to_address: Mapped[str] = mapped_column(String(320), index=True, nullable=False)
@@ -111,3 +138,14 @@ class OutboxEmail(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class LoginThrottle(Base):
+    """Failed sign-in counters, keyed by IP + email and by email alone (accounts or not)."""
+
+    __tablename__ = "login_throttle"
+
+    key: Mapped[str] = mapped_column(String(400), primary_key=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

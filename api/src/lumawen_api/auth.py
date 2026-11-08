@@ -2,6 +2,8 @@
 
 Web browsers get an HttpOnly cookie. The Android/desktop app gets a short access token
 (Authorization: Bearer ...) and a refresh token that rotates on every use.
+
+Lock order, to avoid deadlocks: users row first, then email_tokens / auth_sessions rows.
 """
 
 import uuid
@@ -9,14 +11,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select, update
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_session
 from .mail import queue_email, recent_count
-from .models import AuthSession, EmailToken, User
+from .models import AuthSession, EmailToken, LoginThrottle, User
 from .security import hash_password, hash_token, needs_rehash, new_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -24,10 +27,21 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 COOKIE_NAME = "lumawen_session"
 VERIFY_HOURS = 24
 RESET_MINUTES = 60
+# A refresh token used again this soon after rotating is a retry or a race, not theft.
+REFRESH_GRACE = timedelta(seconds=30)
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 DB = Annotated[Session, Depends(get_session)]
 Password = Annotated[str, Field(min_length=10, max_length=256)]
+
+
+def _ascii_only(email: str) -> str:
+    if not email.isascii():
+        raise ValueError("Use an email address with plain (ASCII) letters.")
+    return email
+
+
+Email = Annotated[EmailStr, AfterValidator(_ascii_only)]
 
 
 def _now() -> datetime:
@@ -62,17 +76,17 @@ class UserOut(BaseModel):
 
 
 class RegisterIn(BaseModel):
-    email: EmailStr
+    email: Email
     password: Password
-    display_name: str | None = Field(None, max_length=80)
 
 
 class EmailIn(BaseModel):
-    email: EmailStr
+    email: Email
 
 
-class TokenIn(BaseModel):
+class ConfirmIn(BaseModel):
     token: str = Field(max_length=200)
+    password: str = Field(max_length=256)  # the one chosen at sign-up
 
 
 class ResetIn(BaseModel):
@@ -81,7 +95,7 @@ class ResetIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: Email
     password: str = Field(max_length=256)
     client: Literal["web", "app"] = "web"
     device_name: str | None = Field(None, max_length=100)
@@ -105,6 +119,7 @@ class Status(BaseModel):
 
 
 CHECK_EMAIL = Status(status="check_email")
+BAD_LINK = "This link is invalid or has expired."
 
 
 # ---- emails ----------------------------------------------------------------------------------
@@ -138,11 +153,12 @@ def _expire_tokens(db: Session, user: User, purpose: str) -> None:
     )
 
 
-def _send_confirm(db: Session, user: User, pending_password_hash: str | None) -> None:
+def _send_confirm(db: Session, user: User, pending_password_hash: str) -> None:
+    # Each sign-up gets its own link carrying its own password. Confirming needs both the
+    # link (proves the inbox) and that password (proves who signed up), so a stranger who
+    # signs up with your address first can never end up owning the account.
     if recent_count(db, user.email, "confirm") >= get_settings().emails_per_hour:
         return
-    # A new sign-up replaces any older confirm links, so only the newest password can win.
-    _expire_tokens(db, user, "verify")
     raw = _issue_email_token(
         db, user, "verify", timedelta(hours=VERIFY_HOURS), pending_password_hash
     )
@@ -152,7 +168,8 @@ def _send_confirm(db: Session, user: User, pending_password_hash: str | None) ->
         user.email,
         "Confirm your Lumawen account",
         "Hi,\n\n"
-        "Confirm your email to finish creating your Lumawen account:\n\n"
+        "Confirm your email to finish creating your Lumawen account. Open this link and enter "
+        "the password you just chose:\n\n"
         f"{link}\n\n"
         f"The link works for {VERIFY_HOURS} hours. If you didn't sign up, ignore this email "
         "and no account will be created.\n\n"
@@ -164,6 +181,7 @@ def _send_confirm(db: Session, user: User, pending_password_hash: str | None) ->
 def _send_reset(db: Session, user: User) -> None:
     if recent_count(db, user.email, "reset") >= get_settings().emails_per_hour:
         return
+    _expire_tokens(db, user, "reset")  # only the newest reset link works
     raw = _issue_email_token(db, user, "reset", timedelta(minutes=RESET_MINUTES))
     link = f"{get_settings().dashboard_url}/reset?token={raw}"
     queue_email(
@@ -196,16 +214,64 @@ def _send_already_registered(db: Session, user: User) -> None:
     )
 
 
-def _use_email_token(db: Session, raw: str, purpose: str) -> EmailToken:
+def _lock_email_token(db: Session, raw: str, purpose: str) -> tuple[EmailToken, User]:
+    """Find a live one-time token and lock its user, then the token (users first)."""
+    digest = hash_token(raw)
     token = db.scalar(
-        select(EmailToken)
-        .where(EmailToken.token_hash == hash_token(raw), EmailToken.purpose == purpose)
-        .with_for_update()
+        select(EmailToken).where(EmailToken.token_hash == digest, EmailToken.purpose == purpose)
     )
-    if token is None or token.used_at is not None or token.expires_at <= _now():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is invalid or has expired.")
-    token.used_at = _now()
-    return token
+    if token is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, BAD_LINK)
+    user = db.get(User, token.user_id, with_for_update=True)
+    db.refresh(token, with_for_update=True)
+    if token.used_at is not None or token.expires_at <= _now():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, BAD_LINK)
+    return token, user
+
+
+# ---- sign-in throttling ----------------------------------------------------------------------
+
+
+def _client_ip(request: Request) -> str:
+    # Behind nginx, uvicorn runs with --proxy-headers so this is the visitor's address.
+    return request.client.host if request.client else "unknown"
+
+
+def _throttle_rules(email: str, ip: str) -> list[tuple[str, int, timedelta]]:
+    s = get_settings()
+    return [
+        (f"ip:{ip}|{email}", s.max_failed_logins, timedelta(minutes=s.lockout_minutes)),
+        (f"email:{email}", s.max_failed_per_email, timedelta(minutes=s.email_lockout_minutes)),
+    ]
+
+
+def _throttled(db: Session, rules: list[tuple[str, int, timedelta]]) -> bool:
+    keys = [key for key, _, _ in rules]
+    locks = db.scalars(select(LoginThrottle.locked_until).where(LoginThrottle.key.in_(keys)))
+    return any(until is not None and until > _now() for until in locks)
+
+
+def _record_failure(db: Session, rules: list[tuple[str, int, timedelta]]) -> None:
+    now = _now()
+    for key, limit, window in rules:
+        db.execute(
+            pg_insert(LoginThrottle)
+            .values(key=key, failures=0, window_started_at=now)
+            .on_conflict_do_nothing(index_elements=["key"])
+        )
+        row = db.get(LoginThrottle, key, with_for_update=True, populate_existing=True)
+        if row.window_started_at <= now - window:
+            row.failures = 0
+            row.window_started_at = now
+        row.failures += 1
+        if row.failures >= limit:
+            row.locked_until = now + window
+            row.failures = 0
+            row.window_started_at = now
+
+
+def _clear_failures(db: Session, rules: list[tuple[str, int, timedelta]]) -> None:
+    db.execute(delete(LoginThrottle).where(LoginThrottle.key == rules[0][0]))
 
 
 # ---- sessions --------------------------------------------------------------------------------
@@ -263,10 +329,10 @@ def _live(session: AuthSession | None) -> bool:
 
 
 def _same_origin(request: Request) -> bool:
-    """Block cross-site form posts that ride on the cookie (CSRF)."""
+    """Block cross-site posts that ride on the cookie (CSRF)."""
     origin = request.headers.get("origin")
     if origin is None:
-        return True  # not sent by a browser cross-site request; SameSite=Lax covers the rest
+        return True  # not a cross-site browser request; SameSite=Lax covers the rest
     return origin.rstrip("/") == get_settings().public_base_url.rstrip("/")
 
 
@@ -324,18 +390,16 @@ AdminUser = Annotated[User, Depends(require_admin)]
 
 @router.post("/register", status_code=202, response_model=Status)
 def register(body: RegisterIn, db: DB) -> Status:
-    """Always answers the same way, so nobody can test which emails have accounts."""
+    """Always answers the same way (and hashes once), so nobody can test who has an account."""
     email = normalize_email(body.email)
-    user = db.scalar(select(User).where(User.email == email).with_for_update())
     pending = hash_password(body.password)
-    if user is None:
-        user = User(email=email, display_name=body.display_name)
-        db.add(user)
-        db.flush()
-        _send_confirm(db, user, pending)
-    elif user.email_verified_at is None:
-        if body.display_name:
-            user.display_name = body.display_name
+    db.execute(
+        pg_insert(User)
+        .values(id=uuid.uuid4(), email=email, role="user")
+        .on_conflict_do_nothing(index_elements=["email"])
+    )
+    user = db.scalar(select(User).where(User.email == email).with_for_update())
+    if user.email_verified_at is None:
         _send_confirm(db, user, pending)
     else:
         _send_already_registered(db, user)
@@ -343,64 +407,51 @@ def register(body: RegisterIn, db: DB) -> Status:
     return CHECK_EMAIL
 
 
-@router.post("/resend-confirmation", status_code=202, response_model=Status)
-def resend_confirmation(body: EmailIn, db: DB) -> Status:
-    user = db.scalar(select(User).where(User.email == normalize_email(body.email)))
-    if user is not None and user.email_verified_at is None:
-        latest = db.scalar(
-            select(EmailToken)
-            .where(EmailToken.user_id == user.id, EmailToken.purpose == "verify")
-            .order_by(EmailToken.created_at.desc())
-            .limit(1)
-        )
-        # Re-send with the same pending password; without one there is nothing to confirm.
-        if latest is not None and latest.pending_password_hash:
-            _send_confirm(db, user, latest.pending_password_hash)
-            db.commit()
-    return CHECK_EMAIL
-
-
 @router.post("/confirm", response_model=Status)
-def confirm_email(body: TokenIn, db: DB) -> Status:
-    token = _use_email_token(db, body.token, "verify")
-    user = db.get(User, token.user_id, with_for_update=True)
+def confirm_email(body: ConfirmIn, db: DB) -> Status:
+    token, user = _lock_email_token(db, body.token, "verify")
     if user.email_verified_at is None:
+        if not verify_password(token.pending_password_hash, body.password):
+            db.rollback()
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "That isn't the password chosen for this sign-up. Try again, or sign up again.",
+            )
         user.email_verified_at = _now()
-        if token.pending_password_hash:
-            user.password_hash = token.pending_password_hash
+        user.password_hash = token.pending_password_hash
         _expire_tokens(db, user, "verify")
+    token.used_at = _now()
     db.commit()
     return Status(status="confirmed")
 
 
 @router.post("/login", response_model=LoginOut)
-def login(body: LoginIn, response: Response, db: DB) -> LoginOut:
-    settings = get_settings()
-    now = _now()
-    user = db.scalar(
-        select(User).where(User.email == normalize_email(body.email)).with_for_update()
-    )
-    if user is not None and user.locked_until is not None and user.locked_until > now:
+def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginOut:
+    if body.client == "web" and not _same_origin(request):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
+    email = normalize_email(body.email)
+    rules = _throttle_rules(email, _client_ip(request))
+    if _throttled(db, rules):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many wrong passwords. Try again later or reset your password.",
         )
-    if not verify_password(user.password_hash if user else None, body.password):
-        if user is not None:
-            if user.email_verified_at is None and _matches_pending(db, user, body.password):
-                raise HTTPException(
-                    status.HTTP_403_FORBIDDEN,
-                    "Confirm your email first. Check your inbox for the link.",
-                )
-            user.failed_logins += 1
-            if user.failed_logins >= settings.max_failed_logins:
-                user.failed_logins = 0
-                user.locked_until = now + timedelta(minutes=settings.lockout_minutes)
-            db.commit()
+    user = db.scalar(select(User).where(User.email == email))
+    # Exactly one Argon2 check on every path: the real hash, the newest unconfirmed sign-up's
+    # hash, or a dummy for unknown emails, so timing doesn't reveal anything either.
+    check = user.password_hash if user is not None else None
+    if user is not None and check is None:
+        check = _latest_pending_hash(db, user)
+    if not verify_password(check, body.password):
+        _record_failure(db, rules)
+        db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong email or password.")
+    if user.password_hash is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Confirm your email first. Check your inbox for the link."
+        )
 
-    user.failed_logins = 0
-    user.locked_until = None
+    _clear_failures(db, rules)
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
     tokens = _start_session(db, user, body.client, body.device_name)
@@ -417,9 +468,9 @@ def login(body: LoginIn, response: Response, db: DB) -> LoginOut:
     )
 
 
-def _matches_pending(db: Session, user: User, password: str) -> bool:
-    token = db.scalar(
-        select(EmailToken)
+def _latest_pending_hash(db: Session, user: User) -> str | None:
+    return db.scalar(
+        select(EmailToken.pending_password_hash)
         .where(
             EmailToken.user_id == user.id,
             EmailToken.purpose == "verify",
@@ -429,7 +480,6 @@ def _matches_pending(db: Session, user: User, password: str) -> bool:
         .order_by(EmailToken.created_at.desc())
         .limit(1)
     )
-    return token is not None and verify_password(token.pending_password_hash, password)
 
 
 @router.post("/refresh", response_model=LoginOut)
@@ -439,12 +489,21 @@ def refresh(body: RefreshIn, db: DB) -> LoginOut:
     session = db.scalar(
         select(AuthSession)
         .where(AuthSession.token_hash == digest, AuthSession.client == "app")
-        .with_for_update()
+        .with_for_update(of=AuthSession)
     )
     if session is None:
-        # An old refresh token came back: it was probably stolen, so end that session.
-        reused = db.scalar(select(AuthSession).where(AuthSession.previous_token_hash == digest))
+        reused = db.scalar(
+            select(AuthSession)
+            .where(AuthSession.previous_token_hash == digest)
+            .with_for_update(of=AuthSession)
+        )
         if reused is not None and reused.revoked_at is None:
+            if reused.rotated_at is not None and _now() - reused.rotated_at <= REFRESH_GRACE:
+                # Two refreshes raced, or a retry: keep the session, use the newest tokens.
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "This refresh token was just used; use the new one."
+                )
+            # An old refresh token came back much later: probably stolen, so end the session.
             reused.revoked_at = _now()
             db.commit()
         raise unauthorized
@@ -453,6 +512,7 @@ def refresh(body: RefreshIn, db: DB) -> LoginOut:
     raw, new_digest = new_token()
     session.previous_token_hash = session.token_hash
     session.token_hash = new_digest
+    session.rotated_at = _now()
     session.last_used_at = _now()
     access = _new_access(session)
     db.commit()
@@ -483,24 +543,24 @@ def logout_all(session: CurrentSession, response: Response, db: DB) -> Status:
 
 @router.post("/forgot-password", status_code=202, response_model=Status)
 def forgot_password(body: EmailIn, db: DB) -> Status:
-    user = db.scalar(select(User).where(User.email == normalize_email(body.email)))
+    user = db.scalar(
+        select(User).where(User.email == normalize_email(body.email)).with_for_update()
+    )
     if user is not None:
         _send_reset(db, user)
-        db.commit()
+    db.commit()
     return CHECK_EMAIL
 
 
 @router.post("/reset-password", response_model=Status)
 def reset_password(body: ResetIn, db: DB) -> Status:
-    token = _use_email_token(db, body.token, "reset")
-    user = db.get(User, token.user_id, with_for_update=True)
+    token, user = _lock_email_token(db, body.token, "reset")
     user.password_hash = hash_password(body.password)
     user.email_verified_at = user.email_verified_at or _now()  # they proved they get the mail
-    user.failed_logins = 0
-    user.locked_until = None
     _expire_tokens(db, user, "reset")
     _expire_tokens(db, user, "verify")
     _revoke_all(db, user)  # sign out every device
+    db.execute(delete(LoginThrottle).where(LoginThrottle.key == f"email:{user.email}"))
     db.commit()
     return Status(status="password_changed")
 

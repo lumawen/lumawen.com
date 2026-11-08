@@ -53,10 +53,15 @@ def database_url() -> Iterator[str]:
 
 
 @pytest.fixture
-def client(database_url: str) -> Iterator[TestClient]:
+def app(database_url: str):
     from lumawen_api.main import create_app
 
-    with TestClient(create_app()) as c:
+    return create_app()
+
+
+@pytest.fixture
+def client(app) -> Iterator[TestClient]:
+    with TestClient(app) as c:
         yield c
 
 
@@ -69,7 +74,7 @@ def _clean_tables(request) -> Iterator[None]:
     from lumawen_api.db import get_engine
 
     with get_engine().begin() as conn:
-        conn.execute(text("TRUNCATE users, email_outbox RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE users, email_outbox, login_throttle RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture

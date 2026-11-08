@@ -40,8 +40,8 @@ def database_url() -> Iterator[str]:
     os.environ["LUMAWEN_DATABASE_URL"] = url
     os.environ["LUMAWEN_ENV"] = "test"
     _reset_caches()
-    command.upgrade(Config(str(API_DIR / "alembic.ini")), "head")
     try:
+        command.upgrade(Config(str(API_DIR / "alembic.ini")), "head")
         yield url
     finally:
         from lumawen_api.db import get_engine

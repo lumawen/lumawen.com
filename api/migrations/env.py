@@ -1,20 +1,21 @@
 """Alembic environment: uses the app's settings and table metadata."""
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
 from lumawen_api import models  # noqa: F401  (registers tables on Base.metadata)
 from lumawen_api.config import get_settings
 from lumawen_api.db import Base
 
+# The URL is passed straight to SQLAlchemy, not through alembic.ini, because ConfigParser
+# treats "%" as special and a percent-encoded password (p%40ss) would break migrations.
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=get_settings().database_url,
         target_metadata=target_metadata,
         literal_binds=True,
     )
@@ -23,11 +24,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_engine(get_settings().database_url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

@@ -10,7 +10,7 @@ cd api
 uv sync                                   # install dependencies
 cp .env.example .env                      # then point LUMAWEN_DATABASE_URL at a local Postgres
 uv run alembic upgrade head               # create tables
-uv run uvicorn lumawen_api.main:app --reload --port 3040
+LUMAWEN_ENV=development uv run uvicorn lumawen_api.main:app --reload --port 3040
 ```
 
 Open http://localhost:3040/api/health and http://localhost:3040/api/docs.

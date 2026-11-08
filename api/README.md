@@ -27,6 +27,7 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 | `POST /auth/refresh` | App only. Rotates both tokens. Re-using the previous token within 30 s gets `409` (a retry or race); later, it ends the session. |
 | `POST /auth/logout`, `/auth/logout-all` | Ends this session, or every session. |
 | `POST /auth/forgot-password`, `/auth/reset-password` | One-time reset link (60 min). A reset signs out every device. |
+| `POST /auth/google` | Sign in with a Google ID token (from the web dashboard or the Android app). Links to the account with the same email, or creates one. |
 | `GET /me` | The signed-in user. |
 | `GET /admin/users` | Admins only. |
 
@@ -37,6 +38,10 @@ Each address gets at most 3 emails of a kind an hour. Tokens are stored only as 
 Cookie-authenticated POSTs and web sign-ins from another origin are refused. Behind nginx, run
 uvicorn with `--proxy-headers --forwarded-allow-ips 127.0.0.1` so the visitor's IP is used; nginx
 `limit_req` adds per-IP limits at deploy time.
+
+Google sign-in accepts only ID tokens issued to our own OAuth client IDs
+(`LUMAWEN_GOOGLE_CLIENT_IDS`) for a Google-verified email. Signing in with Google confirms an
+unconfirmed account and cancels its pending sign-ups.
 
 Emails go into the `email_outbox` table and a worker sends them:
 

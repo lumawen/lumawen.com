@@ -502,9 +502,17 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
     _attempt_succeeded(db, rules)
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
-    tokens = _start_session(db, user, body.client, body.device_name)
+    return sign_in(db, user, body.client, body.device_name, response)
+
+
+def sign_in(
+    db: Session, user: User, client: str, device_name: str | None, response: Response
+) -> LoginOut:
+    """Start a session for a user who has proved who they are, and commit."""
+    tokens = _start_session(db, user, client, device_name)
     db.commit()
-    if body.client == "web":
+    db.refresh(user)  # load server defaults such as created_at
+    if client == "web":
         _set_cookie(response, tokens["session"])
         return LoginOut(user=UserOut.of(user))
     return LoginOut(

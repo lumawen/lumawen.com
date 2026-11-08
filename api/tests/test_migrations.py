@@ -18,8 +18,9 @@ def test_alembic_accepts_percent_encoded_password(database_url):
     admin = create_engine(database_url, isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
         conn.execute(text(f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'"))
-        conn.execute(text(f'GRANT SELECT ON alembic_version TO "{role}"'))
     try:
+        with admin.connect() as conn:
+            conn.execute(text(f'GRANT SELECT ON alembic_version TO "{role}"'))
         url = make_url(database_url).set(username=role, password=password)
         rendered = url.render_as_string(hide_password=False)
         assert "%" in rendered
@@ -29,11 +30,12 @@ def test_alembic_accepts_percent_encoded_password(database_url):
             env={**os.environ, "LUMAWEN_DATABASE_URL": rendered},
             capture_output=True,
             text=True,
+            timeout=60,
         )
         assert result.returncode == 0, result.stderr
         assert "0001" in result.stdout
     finally:
         with admin.connect() as conn:
-            conn.execute(text(f'REVOKE ALL ON alembic_version FROM "{role}"'))
+            conn.execute(text(f'DROP OWNED BY "{role}"'))
             conn.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
         admin.dispose()

@@ -9,7 +9,6 @@ from lumawen_api.db import Base
 
 # The URL is passed straight to SQLAlchemy, not through alembic.ini, because ConfigParser
 # treats "%" as special and a percent-encoded password (p%40ss) would break migrations.
-config = context.config
 target_metadata = Base.metadata
 
 

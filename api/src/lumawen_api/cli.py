@@ -6,12 +6,12 @@ import logging
 import sys
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .auth import normalize_email
 from .db import _session_factory
 from .mail import run_worker
-from .models import User
+from .models import EmailToken, User
 from .security import hash_password
 
 
@@ -27,6 +27,13 @@ def create_admin(email: str, password: str | None) -> str:
             user = User(email=email)
             db.add(user)
         user.role = "admin"
+        db.flush()
+        # Confirm links from earlier sign-ups must not work once the account is confirmed.
+        db.execute(
+            update(EmailToken)
+            .where(EmailToken.user_id == user.id, EmailToken.used_at.is_(None))
+            .values(used_at=datetime.now(UTC))
+        )
         user.email_verified_at = user.email_verified_at or datetime.now(UTC)
         if password:
             user.password_hash = hash_password(password)

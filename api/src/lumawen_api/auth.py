@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import get_session
 from .mail import queue_email, recent_count
-from .models import AuthSession, EmailToken, LoginThrottle, User
+from .models import AuthSession, EmailToken, LoginThrottle, User, UserIdentity
 from .security import hash_password, hash_token, needs_rehash, new_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -616,6 +616,8 @@ def reset_password(body: ResetIn, db: DB) -> Status:
     _expire_tokens(db, user, "reset")
     _expire_tokens(db, user, "verify")
     _revoke_all(db, user)  # sign out every device
+    # Whoever controls the inbox now decides: drop Google accounts linked earlier.
+    db.execute(delete(UserIdentity).where(UserIdentity.user_id == user.id))
     _clear_throttle_for(db, user.email)
     db.commit()
     return Status(status="password_changed")

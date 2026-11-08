@@ -1,0 +1,36 @@
+# nginx site for __HOST__ (Lumawen __STAGE__). setup-server.sh fills in __HOST__/__PORT__/__STAGE__,
+# then certbot adds the HTTPS server block and the http -> https redirect.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __HOST__;
+
+    root /var/www/__HOST__/html;
+    index index.html;
+
+    # Test site: keep it out of search engines.
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    location /api/auth/ {
+        limit_req zone=lumawen_auth burst=10 nodelay;
+        limit_req_status 429;
+        include /etc/nginx/snippets/lumawen-proxy.conf;
+        proxy_pass http://127.0.0.1:__PORT__;
+    }
+
+    location /api/ {
+        limit_req zone=lumawen_api burst=40 nodelay;
+        limit_req_status 429;
+        include /etc/nginx/snippets/lumawen-proxy.conf;
+        proxy_pass http://127.0.0.1:__PORT__;
+    }
+
+    # The dashboard app (Flutter web, step 6) will live here; until then, the landing page.
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ /\.(?!well-known/) {
+        deny all;
+    }
+}

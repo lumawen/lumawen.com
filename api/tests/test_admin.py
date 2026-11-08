@@ -45,3 +45,11 @@ def test_create_admin_command_rejects_short_password(client, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO("short\n"))
     with pytest.raises(SystemExit):
         main(["create-admin", "short@lumawen.com", "--password-stdin"])
+
+
+def test_create_admin_kills_outstanding_confirm_links(client):
+    from helpers import confirm, register
+
+    token = register(client, "early@lumawen.com")
+    create_admin("early@lumawen.com", "admin password 456")
+    assert confirm(client, token).status_code == 400

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
     text,
@@ -149,3 +150,24 @@ class LoginThrottle(Base):
     failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class UserIdentity(Base):
+    """A sign-in from another provider (Google) linked to a user."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "subject", name="user_identities_provider_subject"),
+        CheckConstraint("provider IN ('google')", name="user_identities_provider_valid"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)  # Google's "sub"
+    email: Mapped[str] = mapped_column(String(320), nullable=False)  # at the time of linking
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

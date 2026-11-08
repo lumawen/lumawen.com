@@ -58,3 +58,23 @@ def client(database_url: str) -> Iterator[TestClient]:
 
     with TestClient(create_app()) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _clean_tables(request) -> Iterator[None]:
+    """Empty the account tables after each test that used the database."""
+    yield
+    if "database_url" not in request.fixturenames:
+        return
+    from lumawen_api.db import get_engine
+
+    with get_engine().begin() as conn:
+        conn.execute(text("TRUNCATE users, email_outbox RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture
+def db(database_url: str):
+    from lumawen_api.db import _session_factory
+
+    with _session_factory()() as session:
+        yield session

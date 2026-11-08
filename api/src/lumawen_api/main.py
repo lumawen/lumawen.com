@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from . import __version__, health
+from . import __version__, admin, auth, health
 from .config import get_settings
 
 
@@ -18,6 +18,9 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     app.include_router(health.router, prefix="/api")
+    app.include_router(auth.router, prefix="/api")
+    app.include_router(auth.me_router, prefix="/api")
+    app.include_router(admin.router, prefix="/api")
     return app
 
 

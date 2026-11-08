@@ -35,7 +35,8 @@ def register(client, email: str, password: str = PASSWORD) -> str:
 
 def signed_up(client, email: str, password: str = PASSWORD) -> None:
     token = register(client, email, password)
-    assert client.post("/api/auth/confirm", json={"token": token}).status_code == 200
+    r = client.post("/api/auth/confirm", json={"token": token, "password": password})
+    assert r.status_code == 200, r.text
 
 
 def web_login(client, email: str, password: str = PASSWORD):
@@ -49,3 +50,7 @@ def app_login(client, email: str, password: str = PASSWORD) -> dict:
     )
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def confirm(client, token: str, password: str = PASSWORD):
+    return client.post("/api/auth/confirm", json={"token": token, "password": password})

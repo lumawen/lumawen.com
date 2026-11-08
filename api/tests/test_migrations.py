@@ -39,3 +39,32 @@ def test_alembic_accepts_percent_encoded_password(database_url):
             conn.execute(text(f'DROP OWNED BY "{role}"'))
             conn.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
         admin.dispose()
+
+
+def test_models_match_migrations(database_url):
+    """alembic check: the tables in models.py are exactly what the migrations create."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "check"],
+        cwd=API_DIR,
+        env={**os.environ, "LUMAWEN_DATABASE_URL": database_url},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_downgrade_and_upgrade_again(database_url):
+    def alembic(*args):
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=API_DIR,
+            env={**os.environ, "LUMAWEN_DATABASE_URL": database_url},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+
+    alembic("downgrade", "base")
+    alembic("upgrade", "head")

@@ -1,0 +1,145 @@
+"""Sign in with Google (Google's token check is replaced by a fake)."""
+
+import pytest
+from helpers import PASSWORD, confirm, register, signed_up, web_login
+from sqlalchemy import select
+
+from lumawen_api import config, google
+from lumawen_api.models import User, UserIdentity
+
+WEB_ID = "web-client.apps.googleusercontent.com"
+ANDROID_ID = "android-client.apps.googleusercontent.com"
+
+
+@pytest.fixture(autouse=True)
+def google_setup(monkeypatch):
+    monkeypatch.setattr(config.get_settings(), "google_client_ids", f"{WEB_ID}, {ANDROID_ID}")
+    tokens: dict[str, dict] = {}
+
+    def fake_fetch(token: str) -> dict:
+        if token not in tokens:
+            raise ValueError("Token used too late / bad signature")
+        return tokens[token]
+
+    monkeypatch.setattr(google, "fetch_claims", fake_fetch)
+    return tokens
+
+
+def claims(sub="g-123", email="player@gmail.com", aud=WEB_ID, verified=True, **extra):
+    return {
+        "sub": sub,
+        "email": email,
+        "email_verified": verified,
+        "aud": aud,
+        "iss": "https://accounts.google.com",
+        "name": "Pat Player",
+        **extra,
+    }
+
+
+def google_login(client, token, kind="web"):
+    return client.post("/api/auth/google", json={"id_token": token, "client": kind})
+
+
+def test_new_google_user_is_created_confirmed(client, google_setup, db):
+    google_setup["t1"] = claims()
+    r = google_login(client, "t1")
+    assert r.status_code == 200, r.text
+    user = r.json()["user"]
+    assert user["email"] == "player@gmail.com" and user["email_verified"] is True
+    assert user["display_name"] == "Pat Player"
+    assert client.get("/api/me").json()["email"] == "player@gmail.com"
+    stored = db.scalar(select(User).where(User.email == "player@gmail.com"))
+    assert stored.password_hash is None
+    # Signing in again finds the same account through the link.
+    google_setup["t2"] = claims(email="renamed@gmail.com")
+    assert google_login(client, "t2").json()["user"]["email"] == "player@gmail.com"
+
+
+def test_android_app_gets_tokens(client, google_setup):
+    google_setup["a1"] = claims(aud=ANDROID_ID)
+    body = google_login(client, "a1", kind="app").json()
+    assert body["token_type"] == "bearer" and body["refresh_token"]
+
+
+def test_links_to_existing_confirmed_account(client, google_setup, db):
+    signed_up(client, "Player@Gmail.com")
+    google_setup["t"] = claims()
+    assert google_login(client, "t").status_code == 200
+    assert db.scalar(select(UserIdentity.email)) == "player@gmail.com"
+    assert len(db.scalars(select(User)).all()) == 1
+    # The password still works too.
+    assert web_login(client, "player@gmail.com").status_code == 200
+
+
+def test_google_cancels_someone_elses_pending_signup(client, google_setup):
+    attacker_link = register(client, "player@gmail.com", "attacker password")
+    google_setup["t"] = claims()
+    assert google_login(client, "t").status_code == 200
+    assert confirm(client, attacker_link, "attacker password").status_code == 400
+    assert web_login(client, "player@gmail.com", "attacker password").status_code == 401
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        claims(aud="someone-elses-app.apps.googleusercontent.com"),
+        claims(iss="https://evil.example"),
+        claims(sub=""),
+    ],
+)
+def test_rejects_tokens_not_meant_for_us(client, google_setup, bad):
+    google_setup["bad"] = bad
+    assert google_login(client, "bad").status_code == 401
+
+
+def test_rejects_unverified_google_email(client, google_setup):
+    google_setup["u"] = claims(verified=False)
+    assert google_login(client, "u").status_code == 403
+
+
+def test_rejects_forged_or_expired_token(client):
+    assert google_login(client, "not-a-real-token").status_code == 401
+
+
+def test_off_when_no_client_ids(client, google_setup, monkeypatch):
+    monkeypatch.setattr(config.get_settings(), "google_client_ids", "")
+    google_setup["t"] = claims()
+    assert google_login(client, "t").status_code == 503
+
+
+def test_web_google_sign_in_from_another_site_is_blocked(client, google_setup):
+    google_setup["t"] = claims()
+    r = client.post(
+        "/api/auth/google",
+        json={"id_token": "t", "client": "web"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+
+
+def test_password_less_google_user_can_set_a_password(client, google_setup):
+    from helpers import link_token, outbox
+
+    google_setup["t"] = claims()
+    google_login(client, "t")
+    client.post("/api/auth/forgot-password", json={"email": "player@gmail.com"})
+    token = link_token(outbox("player@gmail.com", "reset")[-1])
+    client.post("/api/auth/reset-password", json={"token": token, "password": PASSWORD})
+    assert web_login(client, "player@gmail.com").status_code == 200
+
+
+def test_parallel_first_google_sign_ins(app, google_setup):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.testclient import TestClient
+
+    google_setup["t"] = claims()
+
+    def go(_):
+        with TestClient(app) as c:
+            return google_login(c, "t").status_code
+
+    with ThreadPoolExecutor(6) as pool:
+        codes = list(pool.map(go, range(6)))
+    assert set(codes) <= {200, 409} and 200 in codes

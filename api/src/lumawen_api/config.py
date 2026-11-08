@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     email_lockout_minutes: int = 60
     emails_per_hour: int = 3  # per address and email kind (confirm, reset, ...)
 
+    # Google sign-in: the OAuth client IDs (web, Android, ...) whose ID tokens we accept,
+    # comma-separated. Empty turns Google sign-in off.
+    google_client_ids: str = ""
+
+    @property
+    def google_audiences(self) -> set[str]:
+        return {c.strip() for c in self.google_client_ids.split(",") if c.strip()}
+
     # Email. "console" only logs messages; "smtp" sends them (Purelymail on cobalt).
     mail_backend: str = "console"  # console | smtp
     mail_from: str = "Lumawen <hello@lumawen.com>"

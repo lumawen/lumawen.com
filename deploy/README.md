@@ -40,6 +40,7 @@ ssh shawn@cobalt 'bash ~/lumawen-test/deploy/deploy.sh test'
 ## Handy
 
 - Logs: `pm2 logs lumawen-api-test` and `pm2 logs lumawen-mail-test`
+- Turn on Google sign-in: add `LUMAWEN_GOOGLE_CLIENT_IDS=<web id>,<android id>` to `api/.env`, then restart.
 - Change a setting: edit `~/lumawen-test/api/.env`, then `pm2 restart lumawen-api-test lumawen-mail-test`
 - Database backup: `sudo -u postgres pg_dump lumawen_test > lumawen_test-$(date +%F).sql`
 - Undo everything: see the top of `setup-server.sh`

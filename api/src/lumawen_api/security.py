@@ -2,6 +2,7 @@
 
 import hashlib
 import secrets
+import threading
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
@@ -11,13 +12,20 @@ _hasher = PasswordHasher()
 _DUMMY_HASH = _hasher.hash("lumawen-timing-dummy")
 
 
+# Each Argon2 hash uses 64 MiB. Without a cap, a flood of sign-ups or sign-ins could run dozens
+# at once per worker and run the server out of memory; extra requests wait their turn instead.
+_slots = threading.BoundedSemaphore(4)
+
+
 def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+    with _slots:
+        return _hasher.hash(password)
 
 
 def verify_password(password_hash: str | None, password: str) -> bool:
     try:
-        ok = _hasher.verify(password_hash or _DUMMY_HASH, password)
+        with _slots:
+            ok = _hasher.verify(password_hash or _DUMMY_HASH, password)
     except (VerificationError, InvalidHashError):
         return False
     return ok and password_hash is not None

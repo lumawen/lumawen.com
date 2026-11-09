@@ -33,7 +33,7 @@ DB="lumawen_$STAGE"
 [[ $EUID -eq 0 ]] || { echo "Run with sudo." >&2; exit 1; }
 APP_USER="${SUDO_USER:-}"
 if [[ -z "$APP_USER" || "$APP_USER" == "root" ]]; then
-  echo "Run this with sudo from your normal account (e.g. shawn), not from a root shell." >&2
+  echo "Run this with sudo from your normal account (the one that owns the checkout), not from a root shell." >&2
   exit 1
 fi
 APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
@@ -157,6 +157,7 @@ cp -a /etc/nginx "$BACKUP"
 echo "Backed up /etc/nginx to $BACKUP"
 install -m 644 "$SRC/lumawen-ratelimit.conf" /etc/nginx/conf.d/lumawen-ratelimit.conf
 install -m 644 "$SRC/lumawen-proxy.conf" /etc/nginx/snippets/lumawen-proxy.conf
+install -m 644 "$SRC/lumawen-headers.conf" /etc/nginx/snippets/lumawen-headers.conf
 if [[ "$STAGE" == prod ]]; then
   CERT=/etc/letsencrypt/live/$HOST/fullchain.pem
   [[ -f "$CERT" ]] || { echo "No certificate at $CERT" >&2; exit 1; }
@@ -164,7 +165,7 @@ if [[ "$STAGE" == prod ]]; then
   if openssl x509 -in "$CERT" -noout -ext subjectAltName | grep -q "DNS:www.$HOST"; then
     NAMES="$HOST www.$HOST"
   else
-    echo "Note: the certificate doesn't cover www.$HOST, so this config serves $HOST only." >&2
+    echo "Note: the certificate doesn't cover www.$HOST, so www isn't served; only $HOST is." >&2
   fi
   # Another enabled file serving this name would win over ours and leave /api/ unproxied.
   OTHERS="$(grep -lsE "server_name[^;]*[[:space:]]${HOST}[[:space:];]" /etc/nginx/sites-enabled/* \
@@ -178,6 +179,9 @@ if [[ "$STAGE" == prod ]]; then
     echo "Replacing the hand-made $SITE (old copy: $BACKUP/sites-available/$HOST)"
   fi
   sed -e "s/__PORT__/$PORT/g" -e "s/__NAMES__/$NAMES/g" "$SRC/$TEMPLATE" > "$SITE"
+  if [[ "$NAMES" == "$HOST" ]]; then
+    sed -i '/# BEGIN www/,/# END www/d' "$SITE"
+  fi
 elif [[ ! -f "$SITE" ]] || ! grep -q "managed by Certbot" "$SITE"; then
   sed -e "s/__HOST__/$HOST/g" -e "s/__PORT__/$PORT/g" -e "s/__STAGE__/$STAGE/g" \
     "$SRC/$TEMPLATE" > "$SITE"

@@ -15,13 +15,13 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .auth import CHECK_EMAIL, DB, Email, Status, _client_ip, _count_attempt, normalize_email
 from .config import get_settings
 from .mail import queue_email
-from .models import Subscriber
+from .models import OutboxEmail, Subscriber
 from .security import hash_token, new_token
 
 router = APIRouter(prefix="/list", tags=["mailing list"])
@@ -29,6 +29,10 @@ router = APIRouter(prefix="/list", tags=["mailing list"])
 CONFIRM_DAYS = 7
 # Sign-ups from one address (IPv6 /64) per hour, so nobody can mail-bomb a list of strangers.
 SIGNUPS_PER_IP_PER_HOUR = 10
+# All confirm emails per hour, so even someone with many IPs can't use us to spam strangers.
+CONFIRMS_PER_HOUR = 300
+# Sign-ups never confirmed are deleted after this many days (see purge_unconfirmed).
+UNCONFIRMED_DAYS = 30
 
 Token = Annotated[str, Query(min_length=10, max_length=100)]
 
@@ -52,7 +56,20 @@ def unsubscribe_url(sub: Subscriber) -> str:
     return list_url("unsubscribe", sub.unsubscribe_token)
 
 
+def _confirms_last_hour(db) -> int:
+    return db.scalar(
+        select(func.count())
+        .select_from(OutboxEmail)
+        .where(
+            OutboxEmail.kind == "list_confirm",
+            OutboxEmail.created_at > _now() - timedelta(hours=1),
+        )
+    )
+
+
 def _send_confirm(db, sub: Subscriber) -> None:
+    if _confirms_last_hour(db) >= CONFIRMS_PER_HOUR:
+        return
     raw, digest = new_token()
     body = (
         "Hi,\n\n"
@@ -88,7 +105,7 @@ def subscribe(body: SubscribeIn, request: Request, db: DB) -> Status:
         .on_conflict_do_nothing(index_elements=["email"])
     )
     sub = db.scalar(select(Subscriber).where(Subscriber.email == email).with_for_update())
-    if sub.status != "subscribed":
+    if sub is not None and sub.status != "subscribed":  # None: an admin erased it just now
         _send_confirm(db, sub)
     db.commit()
     return CHECK_EMAIL
@@ -133,6 +150,7 @@ BAD_LINK_PAGE = (
     "Link expired",
     "This link is invalid or has expired. Sign up again on lumawen.com.",
 )
+NOT_ON_LIST_PAGE = ("You're not on the list", "This address won't get any Lumawen updates.")
 
 
 def _pending_by_token(db, token: str) -> Subscriber | None:
@@ -182,7 +200,7 @@ def _by_unsubscribe_token(db, token: str) -> Subscriber | None:
 def unsubscribe_page(token: Token, db: DB):
     sub = _by_unsubscribe_token(db, token)
     if sub is None:
-        return _page(*BAD_LINK_PAGE, status=400)
+        return _page(*NOT_ON_LIST_PAGE, status=400)
     if sub.status == "unsubscribed":
         return _page("You're unsubscribed", "You won't get any more Lumawen updates.")
     return _page(
@@ -198,7 +216,7 @@ def unsubscribe(token: Token, db: DB):
     """The page's button, and one-click unsubscribe from mail apps (RFC 8058)."""
     sub = _by_unsubscribe_token(db, token)
     if sub is None:
-        return _page(*BAD_LINK_PAGE, status=400)
+        return _page(*NOT_ON_LIST_PAGE, status=400)
     if sub.status != "unsubscribed":
         sub.status = "unsubscribed"
         sub.unsubscribed_at = _now()
@@ -206,3 +224,13 @@ def unsubscribe(token: Token, db: DB):
         sub.confirm_expires_at = None
         db.commit()
     return _page("You're unsubscribed", "You won't get any more Lumawen updates.")
+
+
+def purge_unconfirmed(db) -> int:
+    """Forget sign-ups nobody confirmed (called by the send worker)."""
+    cutoff = _now() - timedelta(days=UNCONFIRMED_DAYS)
+    result = db.execute(
+        delete(Subscriber).where(Subscriber.status == "pending", Subscriber.created_at < cutoff)
+    )
+    db.commit()
+    return result.rowcount

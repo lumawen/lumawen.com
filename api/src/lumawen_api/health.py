@@ -40,3 +40,9 @@ def health(response: Response, session: Annotated[Session, Depends(get_session)]
         "commit": build.get("commit"),
         "built_at": build.get("built_at"),
     }
+
+
+@router.get("/config")
+def public_config() -> dict:
+    """Settings the dashboard and app need before signing in. Nothing secret."""
+    return {"google_client_id": get_settings().google_web_client_id}

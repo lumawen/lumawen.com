@@ -21,7 +21,7 @@ def test_register_confirm_login_me_logout(client):
     token = register(client, "Player@Example.com")
     [email] = outbox("player@example.com")
     assert email.subject == "Confirm your Lumawen account"
-    assert "/dashboard/confirm?token=" in email.body_text
+    assert "/dashboard/#/confirm?token=" in email.body_text
 
     r = confirm(client, token)
     assert r.json() == {"status": "confirmed"}

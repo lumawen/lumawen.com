@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     def google_audiences(self) -> set[str]:
         return {c.strip() for c in self.google_client_ids.split(",") if c.strip()}
 
+    @property
+    def google_web_client_id(self) -> str | None:
+        """The first ID is the web client: the dashboard's Google button uses it."""
+        ids = [c.strip() for c in self.google_client_ids.split(",") if c.strip()]
+        return ids[0] if ids else None
+
     # Email. "console" only logs messages; "smtp" sends them (Purelymail on cobalt).
     mail_backend: str = "console"  # console | smtp
     mail_from: str = "Lumawen <hello@lumawen.com>"
@@ -52,6 +58,8 @@ class Settings(BaseSettings):
 
     @property
     def dashboard_url(self) -> str:
+        # The dashboard uses hash routes (/dashboard/#/confirm?token=...): tokens in the
+        # fragment never reach server logs.
         return self.public_base_url.rstrip("/") + "/dashboard"
 
 

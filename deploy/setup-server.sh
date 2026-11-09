@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# One-time server setup for the Lumawen API on cobalt (test stage). Run over ssh -t with sudo:
+# One-time server setup for a Lumawen stage on cobalt. Run over ssh -t with sudo:
 #   sudo bash ~/lumawen-test/deploy/setup-server.sh test
+#   sudo bash ~/lumawen-prod/deploy/setup-server.sh prod
 #
 # It creates the Postgres database and user, writes api/.env (asking for the Purelymail app
-# password, hidden), adds the nginx site test.lumawen.com and its HTTPS certificate, then runs
-# deploy.sh as you. Safe to run again: it never rewrites an existing api/.env, and it puts
+# password, hidden), adds the nginx site and its HTTPS certificate, then runs deploy.sh as you. Safe to run again: it never rewrites an existing api/.env, and it puts
 # /etc/nginx back as it was if the new config doesn't pass nginx -t.
 #
-# Prod (lumawen.com) is not handled here yet: the live site's nginx config needs the /api/
-# blocks merged by hand, which a later step will do with you.
+# Prod (lumawen.com) replaces the hand-made static-site nginx config with
+# deploy/nginx/prod.conf.template, reusing the existing certificate, and from then on deploy.sh
+# publishes the site from the repo (update-site.sh and site zips are no longer used).
 #
 # UNDO:
 #   pm2 delete lumawen-api-test lumawen-mail-test && pm2 save
@@ -17,16 +18,18 @@
 #   sudo certbot delete --cert-name test.lumawen.com
 #   sudo -u postgres psql -c 'DROP DATABASE lumawen_test' -c 'DROP ROLE lumawen_test'
 #   rm -rf ~/lumawen-test; sudo rm -rf /var/www/test.lumawen.com
+# UNDO prod: pm2 delete lumawen-api-prod lumawen-mail-prod && pm2 save, put back
+#   /etc/nginx/sites-available/lumawen.com from the /etc/nginx.bak-* folder this printed and reload,
+#   then (optional) drop the lumawen_prod database and role as above and rm -rf ~/lumawen-prod.
 set -euo pipefail
 
 STAGE="${1:-}"
-if [[ "$STAGE" != "test" ]]; then
-  echo "usage: sudo bash setup-server.sh test   (prod is set up separately, by hand)" >&2
-  exit 2
-fi
-HOST="test.lumawen.com"
-PORT=3041
-DB="lumawen_test"
+case "$STAGE" in
+  test) HOST="test.lumawen.com"; PORT=3041; TEMPLATE=site.conf.template ;;
+  prod) HOST="lumawen.com"; PORT=3040; TEMPLATE=prod.conf.template ;;
+  *) echo "usage: sudo bash setup-server.sh test|prod" >&2; exit 2 ;;
+esac
+DB="lumawen_$STAGE"
 [[ $EUID -eq 0 ]] || { echo "Run with sudo." >&2; exit 1; }
 APP_USER="${SUDO_USER:-}"
 if [[ -z "$APP_USER" || "$APP_USER" == "root" ]]; then
@@ -41,7 +44,7 @@ ENV_FILE="$DIR/api/.env"
 say() { printf '\n==> %s\n' "$*"; }
 # Run a command as the normal user with pm2 (nvm) and uv (~/.local/bin) on PATH.
 PATH_HELPER="$(dirname "$(readlink -f "$0")")/pm2-path.sh"
-[[ -r "$PATH_HELPER" ]] || { echo "Missing $PATH_HELPER: run git -C ~/lumawen-test pull first." >&2; exit 1; }
+[[ -r "$PATH_HELPER" ]] || { echo "Missing $PATH_HELPER: run git -C ~/lumawen-$STAGE pull first." >&2; exit 1; }
 as_user() {
   sudo -u "$APP_USER" -H bash -c '. "$1"; '"$1" _ "$PATH_HELPER"
 }
@@ -141,6 +144,9 @@ say "Web folder $WEB"
 if [[ ! -d "/var/www/$HOST" ]]; then
   mkdir -p "$WEB"
   chown -R "$APP_USER": "/var/www/$HOST"  # so deploys need no sudo
+elif [[ "$(stat -c %U "$WEB")" != "$APP_USER" ]]; then
+  # prod: the folder was made by hand for the static site; deploys now write it without sudo.
+  chown -R "$APP_USER": "$WEB"
 fi
 
 say "nginx site $HOST"
@@ -151,9 +157,16 @@ cp -a /etc/nginx "$BACKUP"
 echo "Backed up /etc/nginx to $BACKUP"
 install -m 644 "$SRC/lumawen-ratelimit.conf" /etc/nginx/conf.d/lumawen-ratelimit.conf
 install -m 644 "$SRC/lumawen-proxy.conf" /etc/nginx/snippets/lumawen-proxy.conf
-if [[ ! -f "$SITE" ]] || ! grep -q "managed by Certbot" "$SITE"; then
+if [[ "$STAGE" == prod ]]; then
+  CERT=/etc/letsencrypt/live/$HOST/fullchain.pem
+  [[ -f "$CERT" ]] || { echo "No certificate at $CERT" >&2; exit 1; }
+  if ! openssl x509 -in "$CERT" -noout -ext subjectAltName | grep -q "www.$HOST"; then
+    echo "Note: the certificate doesn't cover www.$HOST; https://www.$HOST will show a warning." >&2
+  fi
+  sed -e "s/__PORT__/$PORT/g" "$SRC/$TEMPLATE" > "$SITE"
+elif [[ ! -f "$SITE" ]] || ! grep -q "managed by Certbot" "$SITE"; then
   sed -e "s/__HOST__/$HOST/g" -e "s/__PORT__/$PORT/g" -e "s/__STAGE__/$STAGE/g" \
-    "$SRC/site.conf.template" > "$SITE"
+    "$SRC/$TEMPLATE" > "$SITE"
 fi
 ln -sf "$SITE" "/etc/nginx/sites-enabled/$HOST"
 if ! nginx -t; then
@@ -165,7 +178,7 @@ if ! nginx -t; then
 fi
 systemctl reload nginx
 
-if ! grep -q "managed by Certbot" "$SITE"; then
+if [[ "$STAGE" == test ]] && ! grep -q "managed by Certbot" "$SITE"; then
   say "HTTPS certificate for $HOST"
   certbot --nginx --non-interactive --agree-tos --keep-until-expiring -m admin@lumawen.com \
     --redirect -d "$HOST"

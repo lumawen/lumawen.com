@@ -1,0 +1,56 @@
+# nginx site for lumawen.com + www (Lumawen prod). setup-server.sh prod writes it to
+# /etc/nginx/sites-available/lumawen.com, replacing the hand-made static-site config (a backup of
+# /etc/nginx is kept). Uses the existing Let's Encrypt certificate, which certbot keeps renewing.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name lumawen.com www.lumawen.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name lumawen.com www.lumawen.com;
+
+    ssl_certificate /etc/letsencrypt/live/lumawen.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/lumawen.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    root /var/www/lumawen.com/html;
+    index index.html;
+
+    location /api/auth/ {
+        limit_req zone=lumawen_auth burst=10 nodelay;
+        limit_req_status 429;
+        include /etc/nginx/snippets/lumawen-proxy.conf;
+        proxy_pass http://127.0.0.1:__PORT__;
+    }
+
+    location /api/ {
+        limit_req zone=lumawen_api burst=40 nodelay;
+        limit_req_status 429;
+        include /etc/nginx/snippets/lumawen-proxy.conf;
+        proxy_pass http://127.0.0.1:__PORT__;
+    }
+
+    # The dashboard's start files must not be cached, or browsers keep an old version after a
+    # deploy. Flutter's other files are fetched by name from these, so normal caching is fine.
+    location = /dashboard/ {
+        add_header Cache-Control "no-cache" always;
+        try_files /dashboard/index.html =404;
+    }
+    location ~ ^/dashboard/(flutter_bootstrap\.js|flutter_service_worker\.js|main\.dart\.js|version\.json|manifest\.json)$ {
+        add_header Cache-Control "no-cache" always;
+    }
+
+    # The landing page, privacy, terms, and the dashboard (Flutter web) under /dashboard/.
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ /\.(?!well-known/) {
+        deny all;
+    }
+}

@@ -70,7 +70,9 @@ class _ActivityTabState extends State<ActivityTab> with AutomaticKeepAliveClient
       setState(() {
         _total = total;
         if (!more) _entries.clear();
-        _entries.addAll(entries);
+        // New actions push older ones down a page, so skip any already shown.
+        final shown = {for (final e in _entries) e.id};
+        _entries.addAll(entries.where((e) => !shown.contains(e.id)));
       });
     } catch (e) {
       if (mounted) showError(context, e);

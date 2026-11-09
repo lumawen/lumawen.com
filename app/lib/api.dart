@@ -75,11 +75,13 @@ class MemberPage {
 
 class Activity {
   Activity.fromJson(Map<String, dynamic> j)
-    : createdAt = DateTime.parse(j['created_at'] as String).toLocal(),
+    : id = j['id'] as int,
+      createdAt = DateTime.parse(j['created_at'] as String).toLocal(),
       actor = j['actor_email'] as String,
       action = j['action'] as String,
       target = j['target'] as String,
       detail = (j['detail'] as Map).cast<String, dynamic>();
+  final int id;
   final DateTime createdAt;
   final String actor;
   final String action;

@@ -141,13 +141,13 @@ ENV
 fi
 
 say "Web folder $WEB"
-if [[ ! -d "/var/www/$HOST" ]]; then
-  mkdir -p "$WEB"
-  chown -R "$APP_USER": "/var/www/$HOST"  # so deploys need no sudo
-elif [[ "$(stat -c %U "$WEB")" != "$APP_USER" ]]; then
-  # prod: the folder was made by hand for the static site; deploys now write it without sudo.
-  chown -R "$APP_USER": "$WEB"
+if [[ "$STAGE" == prod && -d "$WEB" && ! -f "$WEB/.deployed-from-repo" ]]; then
+  # First prod setup: deploys replace the hand-uploaded site with the repo's site/, so keep it.
+  cp -a "$WEB" "$WEB.bak-$(date +%F-%H%M%S)"
+  echo "Kept a copy of the current site in $WEB.bak-*"
 fi
+mkdir -p "$WEB"
+chown -R "$APP_USER": "/var/www/$HOST"  # so deploys need no sudo
 
 say "nginx site $HOST"
 SRC="$DIR/deploy/nginx"
@@ -160,10 +160,24 @@ install -m 644 "$SRC/lumawen-proxy.conf" /etc/nginx/snippets/lumawen-proxy.conf
 if [[ "$STAGE" == prod ]]; then
   CERT=/etc/letsencrypt/live/$HOST/fullchain.pem
   [[ -f "$CERT" ]] || { echo "No certificate at $CERT" >&2; exit 1; }
-  if ! openssl x509 -in "$CERT" -noout -ext subjectAltName | grep -q "www.$HOST"; then
-    echo "Note: the certificate doesn't cover www.$HOST; https://www.$HOST will show a warning." >&2
+  NAMES="$HOST"
+  if openssl x509 -in "$CERT" -noout -ext subjectAltName | grep -q "DNS:www.$HOST"; then
+    NAMES="$HOST www.$HOST"
+  else
+    echo "Note: the certificate doesn't cover www.$HOST, so this config serves $HOST only." >&2
   fi
-  sed -e "s/__PORT__/$PORT/g" "$SRC/$TEMPLATE" > "$SITE"
+  # Another enabled file serving this name would win over ours and leave /api/ unproxied.
+  OTHERS="$(grep -lsE "server_name[^;]*[[:space:]]${HOST}[[:space:];]" /etc/nginx/sites-enabled/* \
+    | grep -v "^/etc/nginx/sites-enabled/$HOST\$" || true)"
+  if [[ -n "$OTHERS" ]]; then
+    echo "These enabled nginx files also serve $HOST; disable them first:" >&2
+    echo "$OTHERS" >&2
+    exit 1
+  fi
+  if [[ -f "$SITE" ]] && ! grep -q "Lumawen prod" "$SITE"; then
+    echo "Replacing the hand-made $SITE (old copy: $BACKUP/sites-available/$HOST)"
+  fi
+  sed -e "s/__PORT__/$PORT/g" -e "s/__NAMES__/$NAMES/g" "$SRC/$TEMPLATE" > "$SITE"
 elif [[ ! -f "$SITE" ]] || ! grep -q "managed by Certbot" "$SITE"; then
   sed -e "s/__HOST__/$HOST/g" -e "s/__PORT__/$PORT/g" -e "s/__STAGE__/$STAGE/g" \
     "$SRC/$TEMPLATE" > "$SITE"

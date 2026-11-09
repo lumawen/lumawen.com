@@ -33,7 +33,9 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 Five wrong passwords from one IP for one email pause that pair for 15 minutes, and 50 from anywhere
 pause the email for an hour (a reset lifts it). Unknown emails are counted the same way, and every
 sign-in does exactly one Argon2 check, so neither answers nor timing reveal who has an account.
-Each address gets at most 3 emails of a kind an hour. Tokens are stored only as SHA-256 hashes.
+Each address gets at most 3 emails of a kind an hour. Sign-ups are limited to 10 an hour per IP and
+300 confirm emails an hour in all, and accounts never confirmed are deleted after 30 days. At most
+4 Argon2 checks run at once. In production the session cookie is `__Host-lumawen_session`. Tokens are stored only as SHA-256 hashes.
 Cookie-authenticated POSTs and web sign-ins from another origin are refused. Behind nginx, run
 uvicorn with `--proxy-headers --forwarded-allow-ips 127.0.0.1` so the visitor's IP is used; nginx
 `limit_req` adds per-IP limits at deploy time.

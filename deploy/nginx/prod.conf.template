@@ -5,13 +5,28 @@ server {
     listen 80;
     listen [::]:80;
     server_name __NAMES__;
-    return 301 https://$host$request_uri;
+    return 301 https://lumawen.com$request_uri;
 }
+
+# BEGIN www (removed by setup-server.sh when the certificate doesn't cover www)
+# One address for everything: sign-in only works on the address in LUMAWEN_PUBLIC_BASE_URL.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name www.lumawen.com;
+    ssl_certificate /etc/letsencrypt/live/lumawen.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/lumawen.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    include /etc/nginx/snippets/lumawen-headers.conf;
+    return 301 https://lumawen.com$request_uri;
+}
+# END www
 
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    server_name __NAMES__;
+    server_name lumawen.com;
 
     ssl_certificate /etc/letsencrypt/live/lumawen.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/lumawen.com/privkey.pem;
@@ -20,6 +35,7 @@ server {
 
     root /var/www/lumawen.com/html;
     index index.html;
+    include /etc/nginx/snippets/lumawen-headers.conf;
 
     location /api/auth/ {
         limit_req zone=lumawen_auth burst=10 nodelay;
@@ -38,10 +54,12 @@ server {
     # The dashboard's start files must not be cached, or browsers keep an old version after a
     # deploy. Flutter's other files are fetched by name from these, so normal caching is fine.
     location = /dashboard/ {
+        include /etc/nginx/snippets/lumawen-headers.conf;
         add_header Cache-Control "no-cache" always;
         try_files /dashboard/index.html =404;
     }
     location ~ ^/dashboard/(flutter_bootstrap\.js|flutter_service_worker\.js|main\.dart\.js|version\.json|manifest\.json)$ {
+        include /etc/nginx/snippets/lumawen-headers.conf;
         add_header Cache-Control "no-cache" always;
     }
 

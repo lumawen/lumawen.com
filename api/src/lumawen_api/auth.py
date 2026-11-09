@@ -7,25 +7,39 @@ Lock order, to avoid deadlocks: users row first, then email_tokens / auth_sessio
 """
 
 import ipaddress
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import AfterValidator, BaseModel, EmailStr, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_session
 from .mail import queue_email, recent_count
-from .models import AuthSession, EmailToken, LoginThrottle, User, UserIdentity
+from .models import AuthSession, EmailToken, LoginThrottle, OutboxEmail, User, UserIdentity
 from .security import hash_password, hash_token, needs_rehash, new_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+log = logging.getLogger("lumawen.auth")
+
+# In production the __Host- prefix makes browsers refuse a cookie set by any other subdomain
+# (e.g. test.lumawen.com), so nobody can plant a session on lumawen.com. Needs HTTPS.
 COOKIE_NAME = "lumawen_session"
+SIGNUPS_PER_IP_PER_HOUR = 10
+CONFIRMS_PER_HOUR = 300  # account confirm emails, all addresses together
+UNCONFIRMED_DAYS = 30
+
+
+def cookie_name() -> str:
+    return f"__Host-{COOKIE_NAME}" if get_settings().is_production else COOKIE_NAME
+
+
 VERIFY_HOURS = 24
 RESET_MINUTES = 60
 # A refresh token used again this soon after rotating is a retry or a race, not theft.
@@ -161,6 +175,9 @@ def _send_confirm(db: Session, user: User, pending_password_hash: str) -> None:
     # link (proves the inbox) and that password (proves who signed up), so a stranger who
     # signs up with your address first can never end up owning the account.
     if recent_count(db, user.email, "confirm") >= get_settings().emails_per_hour:
+        return
+    if _emails_last_hour(db, "confirm") >= CONFIRMS_PER_HOUR:
+        log.warning("hourly cap of %s account confirm emails reached", CONFIRMS_PER_HOUR)
         return
     raw = _issue_email_token(
         db, user, "verify", timedelta(hours=VERIFY_HOURS), pending_password_hash
@@ -310,6 +327,38 @@ def _clear_throttle_for(db: Session, email: str) -> None:
     )
 
 
+def _emails_last_hour(db: Session, kind: str) -> int:
+    return db.scalar(
+        select(func.count())
+        .select_from(OutboxEmail)
+        .where(OutboxEmail.kind == kind, OutboxEmail.created_at > _now() - timedelta(hours=1))
+    )
+
+
+def purge_unconfirmed_accounts(db: Session) -> int:
+    """Delete sign-ups never confirmed after UNCONFIRMED_DAYS (called by the send worker)."""
+    live_link = (
+        select(EmailToken.id)
+        .where(
+            EmailToken.user_id == User.id,
+            EmailToken.purpose == "verify",
+            EmailToken.used_at.is_(None),
+            EmailToken.expires_at > _now(),
+        )
+        .exists()
+    )
+    result = db.execute(
+        delete(User).where(
+            User.password_hash.is_(None),
+            User.email_verified_at.is_(None),
+            User.created_at < _now() - timedelta(days=UNCONFIRMED_DAYS),
+            ~live_link,
+        )
+    )
+    db.commit()
+    return result.rowcount
+
+
 def purge_throttle(db: Session) -> int:
     """Forget counters whose window and pause are over (called by the send worker)."""
     now = _now()
@@ -356,7 +405,7 @@ def _new_access(session: AuthSession) -> dict:
 def _set_cookie(response: Response, raw: str) -> None:
     settings = get_settings()
     response.set_cookie(
-        COOKIE_NAME,
+        cookie_name(),
         raw,
         max_age=settings.session_days * 86400,
         httponly=True,
@@ -399,7 +448,7 @@ def current_session(request: Request, db: DB) -> AuthSession:
         ):
             raise unauthorized
     else:
-        raw = request.cookies.get(COOKIE_NAME)
+        raw = request.cookies.get(cookie_name())
         if not raw:
             raise unauthorized
         session = db.scalar(
@@ -449,8 +498,13 @@ SecurityUser = Annotated[User, _role_in("admin", "security")]
 
 
 @router.post("/register", status_code=202, response_model=Status)
-def register(body: RegisterIn, db: DB) -> Status:
+def register(body: RegisterIn, request: Request, db: DB) -> Status:
     """Always answers the same way (and hashes once), so nobody can test who has an account."""
+    ip = _client_ip(request)
+    if not _count_attempt(db, [(f"register:{ip}", SIGNUPS_PER_IP_PER_HOUR, timedelta(hours=1))]):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-ups from here. Try again later."
+        )
     email = normalize_email(body.email)
     pending = hash_password(body.password)
     db.execute(
@@ -622,7 +676,7 @@ def refresh(body: RefreshIn, db: DB) -> LoginOut:
 def logout(session: CurrentSession, response: Response, db: DB) -> Status:
     session.revoked_at = _now()
     db.commit()
-    response.delete_cookie(COOKIE_NAME, path="/")
+    response.delete_cookie(cookie_name(), path="/")
     return Status(status="signed_out")
 
 
@@ -630,7 +684,7 @@ def logout(session: CurrentSession, response: Response, db: DB) -> Status:
 def logout_all(session: CurrentSession, response: Response, db: DB) -> Status:
     _revoke_all(db, session.user)
     db.commit()
-    response.delete_cookie(COOKIE_NAME, path="/")
+    response.delete_cookie(cookie_name(), path="/")
     return Status(status="signed_out")
 
 

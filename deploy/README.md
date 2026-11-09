@@ -25,7 +25,7 @@ pm2, Postgres). No secrets are stored here: each stage's `api/.env` is written o
 DNS: `test.lumawen.com` must point at cobalt (a CNAME to lumawen.com works).
 
 ```bash
-ssh -t shawn@cobalt
+ssh -t you@your-server
 git clone https://github.com/lumawen/lumawen.com.git ~/lumawen-test
 sudo bash ~/lumawen-test/deploy/setup-server.sh test     # asks for the Purelymail app password
 ~/lumawen-test/api/.venv/bin/lumawen-admin create-admin admin@lumawen.com
@@ -39,7 +39,7 @@ kept) and from then on publishes the site from this repo, so the old site zips a
 `update-site.sh` are no longer used.
 
 ```bash
-ssh -t shawn@cobalt
+ssh -t you@your-server
 git clone https://github.com/lumawen/lumawen.com.git ~/lumawen-prod
 sudo bash ~/lumawen-prod/deploy/setup-server.sh prod     # asks for the Purelymail app password
 ~/lumawen-prod/api/.venv/bin/lumawen-admin create-admin admin@lumawen.com
@@ -49,8 +49,8 @@ curl -s https://lumawen.com/api/health
 ## Every deploy after that
 
 ```bash
-ssh shawn@cobalt 'bash ~/lumawen-test/deploy/deploy.sh test'
-ssh shawn@cobalt 'bash ~/lumawen-prod/deploy/deploy.sh prod'
+ssh you@your-server 'bash ~/lumawen-test/deploy/deploy.sh test'
+ssh you@your-server 'bash ~/lumawen-prod/deploy/deploy.sh prod'
 ```
 
 ## Handy

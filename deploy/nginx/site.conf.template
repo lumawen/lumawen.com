@@ -10,6 +10,7 @@ server {
 
     # Test site: keep it out of search engines.
     add_header X-Robots-Tag "noindex, nofollow" always;
+    include /etc/nginx/snippets/lumawen-headers.conf;
 
     location /api/auth/ {
         limit_req zone=lumawen_auth burst=10 nodelay;

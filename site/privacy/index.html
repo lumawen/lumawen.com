@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy · Lumawen</title>
+<meta name="description" content="What Lumawen collects, why, and how to have it deleted.">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#000000">
+<style>
+  @font-face {
+    font-family: "Lumawen Sans";
+    src: url("/assets/fonts/LumawenSans-wght.woff2") format("woff2");
+    font-weight: 200 900;
+    font-display: swap;
+  }
+  :root { --bg: #000; --fg: #fff; --muted: rgba(255,255,255,.7); --faint: rgba(255,255,255,.14); }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.65 "Lumawen Sans", system-ui, sans-serif; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 16px; }
+  header { border-bottom: 1px solid var(--faint); padding: 18px 0; }
+  header img { display: block; height: 36px; width: auto; }
+  main { padding: 48px 0 64px; }
+  h1 { font-size: 40px; line-height: 1.1; letter-spacing: -0.03em; margin: 0 0 8px; }
+  h2 { font-size: 22px; letter-spacing: -0.01em; margin: 40px 0 8px; }
+  p, li { color: var(--muted); }
+  strong { color: var(--fg); }
+  a { color: var(--fg); }
+  footer { border-top: 1px solid var(--faint); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<header><div class="wrap"><a href="/" aria-label="Lumawen home"><img src="/assets/img/lumawen-mark-small-white.svg" alt="Lumawen" width="33" height="36"></a></div></header>
+<main class="wrap">
+  <h1>Privacy</h1>
+  <p>Last updated November 9, 2026</p>
+
+  <p>Lumawen is a small, open source project. We collect as little as we can, we never sell it,
+  and we don't use ad trackers. The code that handles your data is public on
+  <a href="https://github.com/lumawen/lumawen.com">GitHub</a>, so you can check everything here.</p>
+
+  <h2>Mailing list</h2>
+  <p>When you sign up for updates we store <strong>your email address</strong>, when you signed up
+  and confirmed, and whether you're subscribed. We only email you after you click the confirm
+  link. Every email has an unsubscribe link that works with one click. If you never confirm, we
+  delete the sign-up after 30 days.</p>
+
+  <h2>Accounts</h2>
+  <p>If you make a Lumawen account we store your <strong>email address</strong>, an optional
+  display name, and a securely hashed password (we can't read it). We keep track of signed-in
+  sessions so you can sign out everywhere.</p>
+  <p>If you sign in with <strong>Google</strong>, Google tells us your email address, whether
+  Google has verified it, and a Google account ID. We only ask for your basic profile and email,
+  and we use them only to sign you in. We don't get access to your Gmail, contacts or anything
+  else in your Google account.</p>
+
+  <h2>Security logs</h2>
+  <p>To stop password guessing and spam we keep short-lived counters of sign-in and sign-up
+  attempts by IP address, which we delete within about a day. Our server keeps standard web logs
+  (IP address, page, time) for troubleshooting.</p>
+
+  <h2>Who else sees it</h2>
+  <p>Our server runs on our own hardware. Emails are sent through our email provider,
+  <a href="https://purelymail.com">Purelymail</a>. Google sees that you used Google sign-in, if
+  you do. That's it: no analytics, ad networks or data brokers.</p>
+
+  <h2>Your choices</h2>
+  <p>Unsubscribe from any email with its link. To see, correct or delete everything we have about
+  you, email <a href="mailto:hello@lumawen.com">hello@lumawen.com</a> and we'll take care of it.
+  If you have an account you can also remove Google sign-in by resetting your password.</p>
+
+  <h2>Changes</h2>
+  <p>If this page changes in a way that matters, we'll say so on the mailing list. Its history
+  is in our public repository.</p>
+</main>
+<footer><div class="wrap">© 2026 Lumawen · <a href="/">lumawen.com</a> · <a href="mailto:hello@lumawen.com">hello@lumawen.com</a></div></footer>
+</body>
+</html>

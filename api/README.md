@@ -71,6 +71,26 @@ With `LUMAWEN_MAIL_BACKEND=console` (the default) the worker only logs emails.
 Confirm tokens are stored as hashes. Each subscriber's unsubscribe token is stored as-is so every
 newsletter can print it (`lists.unsubscribe_url`); it can only unsubscribe.
 
+## Newsletters
+
+Admins write a newsletter, send themselves a test, then send it now or schedule it. All under
+`/api/admin/newsletters` (admins only; cookie requests must come from our own origin):
+
+| Route | What it does |
+| --- | --- |
+| `POST /admin/newsletters` | New draft: `{subject, body_text}` (plain text). |
+| `GET /admin/newsletters`, `GET /{id}` | Newsletters with status and delivery counts (pending, sent, failed). |
+| `PATCH /{id}`, `DELETE /{id}` | Edit or delete, until it's sent. |
+| `POST /{id}/test` | One `[Test]` copy to you (or `{to}`), right away. 20 an hour. |
+| `POST /{id}/schedule` | `{send_at}` with a time zone, or `{}` for now. |
+| `POST /{id}/cancel` | Back to draft, until the send worker picks it up. |
+
+When it's due, the send worker copies it into the outbox once per subscribed address (a unique
+index makes that happen only once), adding a footer with that person's unsubscribe link and the
+`List-Unsubscribe` + `List-Unsubscribe-Post` headers, so Gmail and others show their own
+unsubscribe button. It then sends at `LUMAWEN_MAIL_PER_SECOND`. On SIGINT/SIGTERM (pm2 restarts)
+the worker finishes its current batch and exits, so nothing is sent twice.
+
 ## Tests
 
 Tests create and drop their own Postgres database. Point them at a server where you may create

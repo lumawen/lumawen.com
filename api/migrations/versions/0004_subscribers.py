@@ -1,4 +1,4 @@
-"""subscribers: the "Lumawen updates" mailing list
+"""subscribers: the "Lumawen updates" mailing list (+ an outbox index for its email cap)
 
 Revision ID: 0004
 Revises: 0003
@@ -34,7 +34,9 @@ def upgrade() -> None:
             "status IN ('pending', 'subscribed', 'unsubscribed')", name="subscribers_status_valid"
         ),
     )
+    op.create_index("email_outbox_kind_created", "email_outbox", ["kind", "created_at"])
 
 
 def downgrade() -> None:
+    op.drop_index("email_outbox_kind_created", table_name="email_outbox")
     op.drop_table("subscribers")

@@ -230,6 +230,8 @@ def test_unconfirmed_signups_are_purged(client, db):
     for email in ("old@example.com", "kept@example.com"):
         sub = db.scalar(select(Subscriber).where(Subscriber.email == email))
         sub.created_at = datetime.now(UTC) - timedelta(days=31)
+        if sub.confirm_expires_at:
+            sub.confirm_expires_at = datetime.now(UTC) - timedelta(days=24)
     db.commit()
     assert purge_unconfirmed(db) == 1
     assert subscriber("old@example.com") is None
@@ -243,3 +245,19 @@ def test_admin_csv_can_export_everyone(client):
     as_admin(client)
     rows = list(csv.reader(io.StringIO(client.get("/api/admin/subscribers.csv?status=all").text)))
     assert [row[0] for row in rows[1:]] == ["in@example.com", "pending2@example.com"]
+
+
+def test_purge_keeps_an_old_signup_that_asked_again(client, db):
+    from datetime import UTC, datetime, timedelta
+
+    from lumawen_api.lists import purge_unconfirmed
+
+    subscribe(client, "slow@example.com")
+    sub = db.scalar(select(Subscriber).where(Subscriber.email == "slow@example.com"))
+    sub.created_at = datetime.now(UTC) - timedelta(days=31)
+    db.commit()
+    assert purge_unconfirmed(db) == 0  # their link is still live
+    assert (
+        client.post(f"/api/list/confirm?token={confirm_token('slow@example.com')}").status_code
+        == 200
+    )

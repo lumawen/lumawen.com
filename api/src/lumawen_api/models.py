@@ -122,6 +122,7 @@ class OutboxEmail(Base):
             "status IN ('pending', 'sent', 'failed')", name="email_outbox_status_valid"
         ),
         Index("email_outbox_due", "send_after", postgresql_where=text("status = 'pending'")),
+        Index("email_outbox_kind_created", "kind", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

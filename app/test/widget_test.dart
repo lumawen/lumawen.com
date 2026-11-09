@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -65,6 +66,30 @@ void main() {
     expect(find.text('Newsletters'), findsWidgets);
     expect(find.text('Mailing list'), findsOneWidget);
     expect(find.textContaining('Nothing written yet'), findsOneWidget);
+  });
+
+  testWidgets('signed out: an email confirm link opens the confirm screen', (tester) async {
+    tester.binding.platformDispatcher.defaultRouteNameTestValue = '/confirm?token=abc123def';
+    addTearDown(tester.binding.platformDispatcher.clearDefaultRouteNameTestValue);
+    String? sentToken;
+    final api = fakeApi((r) {
+      if (r.url.path == '/api/auth/confirm') {
+        sentToken = (jsonDecode(r.body) as Map)['token'] as String;
+        return {'status': 'ok'};
+      }
+      return switch (r.url.path) {
+        '/api/me' => {'_status': 401, 'detail': 'Please sign in.'},
+        _ => {'_status': 404},
+      };
+    });
+    await tester.pumpWidget(LumawenApp(api: api));
+    await tester.pumpAndSettle();
+    expect(find.text('Confirm your account'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'correct horse battery');
+    await tester.tap(find.text('Confirm'));
+    await tester.pumpAndSettle();
+    expect(sentToken, 'abc123def');
+    expect(find.text('You\'re all set'), findsOneWidget);
   });
 
   test('API errors carry the server message', () async {

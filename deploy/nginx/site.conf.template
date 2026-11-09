@@ -25,7 +25,7 @@ server {
         proxy_pass http://127.0.0.1:__PORT__;
     }
 
-    # The dashboard app (Flutter web, step 6) will live here; until then, the landing page.
+    # The landing page, and the dashboard (Flutter web) under /dashboard/.
     location / {
         try_files $uri $uri/ =404;
     }

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     emails_per_hour: int = 3  # per address and email kind (confirm, reset, ...)
 
     # Google sign-in: the OAuth client IDs (web, Android, ...) whose ID tokens we accept,
-    # comma-separated. Empty turns Google sign-in off.
+    # comma-separated, web client first (the dashboard's button uses it). Empty turns it off.
     google_client_ids: str = ""
 
     @property

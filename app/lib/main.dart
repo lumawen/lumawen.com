@@ -19,19 +19,24 @@ class LumawenApp extends StatelessWidget {
       title: 'Lumawen',
       debugShowCheckedModeBanner: false,
       theme: lumawenTheme(),
-      onGenerateRoute: (settings) {
-        final uri = Uri.parse(settings.name ?? '/');
-        final token = uri.queryParameters['token'] ?? '';
-        final Widget page = switch (uri.path) {
-          '/register' => RegisterScreen(api: api),
-          '/confirm' => ConfirmScreen(api: api, token: token),
-          '/forgot' => ForgotScreen(api: api),
-          '/reset' => ResetScreen(api: api, token: token),
-          '/login' => LoginScreen(api: api),
-          _ => HomeScreen(api: api),
-        };
-        return MaterialPageRoute(settings: settings, builder: (_) => page);
-      },
+      // One opening route, not "/" underneath it: otherwise the home screen starts too and
+      // sends signed-out visitors of /confirm or /reset links to sign-in.
+      onGenerateInitialRoutes: (name) => [_route(RouteSettings(name: name))],
+      onGenerateRoute: _route,
     );
+  }
+
+  Route<void> _route(RouteSettings settings) {
+    final uri = Uri.parse(settings.name ?? '/');
+    final token = uri.queryParameters['token'] ?? '';
+    final Widget page = switch (uri.path) {
+      '/register' => RegisterScreen(api: api),
+      '/confirm' => ConfirmScreen(api: api, token: token),
+      '/forgot' => ForgotScreen(api: api),
+      '/reset' => ResetScreen(api: api, token: token),
+      '/login' => LoginScreen(api: api),
+      _ => HomeScreen(api: api),
+    };
+    return MaterialPageRoute(settings: settings, builder: (_) => page);
   }
 }

@@ -9,10 +9,11 @@ LUMAWEN_MAIL_PER_SECOND. Run it with: lumawen-admin send-emails --loop
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import func, literal, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -31,18 +32,25 @@ FOOTER = (
     "Unsubscribe: "
 )
 
-Subject = Field(min_length=1, max_length=200)
-Body = Field(min_length=1, max_length=100_000)
+
+def _one_line(subject: str) -> str:
+    if any(ord(c) < 32 or ord(c) == 127 for c in subject):
+        raise ValueError("The subject must be one line, without control characters.")
+    return subject.strip()
+
+
+Subject = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_one_line)]
+Body = Annotated[str, Field(min_length=1, max_length=100_000)]
 
 
 class NewsletterIn(BaseModel):
-    subject: str = Subject
-    body_text: str = Body
+    subject: Subject
+    body_text: Body
 
 
 class NewsletterPatch(BaseModel):
-    subject: str | None = Field(None, min_length=1, max_length=200)
-    body_text: str | None = Field(None, min_length=1, max_length=100_000)
+    subject: Subject | None = None
+    body_text: Body | None = None
 
 
 class ScheduleIn(BaseModel):

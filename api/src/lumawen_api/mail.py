@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
@@ -124,19 +124,44 @@ def make_sender(settings: Settings) -> ConsoleSender | SmtpSender:
     return ConsoleSender()
 
 
-def send_due(db: Session, sender: Sender, limit: int = 20, pause: float = 0.0) -> int:
-    """Send up to `limit` due emails. Returns how many were sent. Safe to run in parallel."""
+def _still_subscribed(db: Session, row: OutboxEmail) -> bool:
+    from .models import Subscriber  # newsletters only
+
+    status = db.scalar(select(Subscriber.status).where(Subscriber.email == row.to_address))
+    return status == "subscribed"
+
+
+def send_due(
+    db: Session,
+    sender: Sender,
+    limit: int = 20,
+    pause: float = 0.0,
+    stop: threading.Event | None = None,
+) -> int:
+    """Send up to `limit` due emails. Returns how many were sent. Safe to run in parallel.
+
+    Each email is locked, sent and committed on its own, so a crash or kill can resend at most
+    the one email that was in flight.
+    """
     settings = get_settings()
-    now = datetime.now(UTC)
-    rows = db.scalars(
-        select(OutboxEmail)
-        .where(OutboxEmail.status == "pending", OutboxEmail.send_after <= now)
-        .order_by(OutboxEmail.id)
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-    ).all()
     sent = 0
-    for row in rows:
+    for _ in range(limit):
+        if stop is not None and stop.is_set():
+            break
+        now = datetime.now(UTC)
+        row = db.scalar(
+            select(OutboxEmail)
+            .where(OutboxEmail.status == "pending", OutboxEmail.send_after <= now)
+            .order_by(OutboxEmail.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        if row is None:
+            break
+        if row.kind == "newsletter" and not _still_subscribed(db, row):
+            db.delete(row)  # unsubscribed (or erased) after the newsletter was queued
+            db.commit()
+            continue
         try:
             sender(build_message(row, settings))
         except Exception as exc:  # noqa: BLE001 (any failure is retried later)
@@ -152,10 +177,34 @@ def send_due(db: Session, sender: Sender, limit: int = 20, pause: float = 0.0) -
             row.status = "sent"
             row.sent_at = datetime.now(UTC)
             sent += 1
+        db.commit()
         if pause:
             time.sleep(pause)
     db.commit()
     return sent
+
+
+# Sent and failed emails are deleted after this many days (they hold addresses and links).
+KEEP_SENT_DAYS = 30
+
+
+def purge_outbox(db: Session) -> int:
+    cutoff = datetime.now(UTC) - timedelta(days=KEEP_SENT_DAYS)
+    result = db.execute(
+        delete(OutboxEmail).where(
+            OutboxEmail.status.in_(("sent", "failed")), OutboxEmail.created_at < cutoff
+        )
+    )
+    db.commit()
+    return result.rowcount
+
+
+def forget_address(db: Session, email: str, newsletters_only: bool = False) -> None:
+    """Drop queued newsletters to an address (on unsubscribe), or every email to it (erase)."""
+    query = delete(OutboxEmail).where(OutboxEmail.to_address == email)
+    if newsletters_only:
+        query = query.where(OutboxEmail.kind == "newsletter", OutboxEmail.status == "pending")
+    db.execute(query)
 
 
 def _stop_on_signals() -> threading.Event:
@@ -187,13 +236,17 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
             with session_factory() as db:
                 purge_throttle(db)
                 purge_unconfirmed(db)
+                purge_outbox(db)
             last_purge = time.monotonic()
-        with session_factory() as db:
-            queue_due_newsletters(db)
+        try:
+            with session_factory() as db:
+                queue_due_newsletters(db)
+        except Exception:  # keep sign-up and reset emails flowing whatever happened here
+            log.exception("could not queue newsletters")
         sender = make_sender(settings)
         try:
             with session_factory() as db:
-                sent = send_due(db, sender, pause=pause)
+                sent = send_due(db, sender, pause=pause, stop=stop)
         finally:
             sender.close()
         if sent:

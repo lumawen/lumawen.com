@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 
 from .auth import DB, AdminUser, UserOut
+from .mail import forget_address
 from .models import Subscriber, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -147,8 +148,11 @@ def export_subscribers(
 @router.delete("/subscribers/{subscriber_id}", status_code=204)
 def delete_subscriber(subscriber_id: uuid.UUID, _: AdminUser, db: DB) -> Response:
     """Erase someone completely (a privacy request). To just stop emails, they unsubscribe."""
-    result = db.execute(delete(Subscriber).where(Subscriber.id == subscriber_id))
-    if result.rowcount == 0:
+    email = db.scalar(
+        delete(Subscriber).where(Subscriber.id == subscriber_id).returning(Subscriber.email)
+    )
+    if email is None:
         raise HTTPException(404, "No such subscriber.")
+    forget_address(db, email)
     db.commit()
     return Response(status_code=204)

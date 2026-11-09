@@ -155,12 +155,14 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
     settings = get_settings()
     pause = 1.0 / settings.mail_per_second if settings.mail_per_second > 0 else 0.0
     from .auth import purge_throttle  # here to avoid an import cycle
+    from .lists import purge_unconfirmed
 
     last_purge = 0.0
     while True:
         if time.monotonic() - last_purge > 3600:
             with session_factory() as db:
                 purge_throttle(db)
+                purge_unconfirmed(db)
             last_purge = time.monotonic()
         sender = make_sender(settings)
         try:

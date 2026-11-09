@@ -61,11 +61,11 @@ With `LUMAWEN_MAIL_BACKEND=console` (the default) the worker only logs emails.
 
 | Route | What it does |
 | --- | --- |
-| `POST /list/subscribe` | `{email}`. Always answers `202 check_email` and emails a confirm link (7 days), unless the address is already subscribed. At most 10 sign-ups an hour per IP. A filled-in `website` field (a hidden honeypot) is dropped. |
+| `POST /list/subscribe` | `{email}`. Always answers `202 check_email` and emails a confirm link (7 days), unless the address is already subscribed. At most 10 sign-ups an hour per IP and 300 confirm emails an hour in all; unconfirmed sign-ups are deleted after 30 days. A filled-in `website` field (a hidden honeypot) is dropped. |
 | `GET`/`POST /list/confirm?token=` | `GET` shows a page with a button; only the button's `POST` subscribes, so mail scanners that open links can't. |
 | `GET`/`POST /list/unsubscribe?token=` | The same, and `POST` also takes one-click unsubscribe from mail apps (RFC 8058). |
 | `GET /admin/subscribers` | Admins: paged list with counts, `status=` filter and `q=` email search. |
-| `GET /admin/subscribers.csv` | Admins: CSV export (subscribed only by default; `status=` for others). |
+| `GET /admin/subscribers.csv` | Admins: CSV export (subscribed only by default; `status=` another status or `all`). |
 | `DELETE /admin/subscribers/{id}` | Admins: erase someone completely (privacy request). |
 
 Confirm tokens are stored as hashes. Each subscriber's unsubscribe token is stored as-is so every

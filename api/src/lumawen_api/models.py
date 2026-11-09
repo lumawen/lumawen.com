@@ -171,3 +171,35 @@ class UserIdentity(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+SUBSCRIBER_STATUSES = ("pending", "subscribed", "unsubscribed")
+
+
+class Subscriber(Base):
+    """Someone on the "Lumawen updates" mailing list. Double opt-in: pending until confirmed.
+
+    The confirm token is stored only as a hash. The unsubscribe token is stored as-is, since
+    every newsletter needs to print it in its unsubscribe link; it can only unsubscribe.
+    """
+
+    __tablename__ = "subscribers"
+    __table_args__ = (
+        CheckConstraint("email = lower(email)", name="subscribers_email_lowercase"),
+        CheckConstraint(
+            "status IN ('pending', 'subscribed', 'unsubscribed')", name="subscribers_status_valid"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="site")
+    confirm_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    confirm_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unsubscribe_token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unsubscribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

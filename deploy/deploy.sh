@@ -14,7 +14,10 @@ DIR="$HOME/lumawen-$STAGE"
 WEB="/var/www/$HOST/html"
 # shellcheck source=SCRIPTDIR/pm2-path.sh
 . "$(dirname "$(readlink -f "$0")")/pm2-path.sh"
-command -v pm2 >/dev/null || { echo "pm2 not found. Run: which pm2 and paste the result into the Lumawen thread." >&2; exit 1; }
+if ! command -v pm2 >/dev/null || ! command -v node >/dev/null; then
+  echo "pm2 or node not found. Run: which pm2 node and paste the result into the Lumawen thread." >&2
+  exit 1
+fi
 say() { printf '\n==> %s\n' "$*"; }
 
 cd "$DIR"

@@ -25,3 +25,12 @@ if ! command -v pm2 >/dev/null 2>&1; then
   done
   unset _lumawen_bin
 fi
+if ! command -v node >/dev/null 2>&1; then
+  # pm2 is a node script: an npm-global pm2 still needs node, which may only come from nvm.
+  # shellcheck disable=SC2012  # nvm version dirs are plain names like v22.11.0
+  _lumawen_bin="$(ls -d "$NVM_DIR"/versions/node/*/bin 2>/dev/null | sort -rV | head -n 1)"
+  if [[ -n "$_lumawen_bin" && -x "$_lumawen_bin/node" ]]; then
+    export PATH="$PATH:$_lumawen_bin"
+  fi
+  unset _lumawen_bin
+fi

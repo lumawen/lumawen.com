@@ -168,7 +168,7 @@
   .links a { border: 1px solid var(--hair); border-radius: 999px; padding: 9px 16px; text-decoration: none; font-weight: 600; font-size: 15px; color: var(--muted); }
   .links a:hover { color: var(--fg); border-color: var(--fg); }
 
-  /* Mailing list signup form (used again when the API mailing list ships) */
+  /* Mailing list signup form (posts to the Lumawen API, /api/list/subscribe) */
   .signup { display: flex; gap: 10px; max-width: 520px; margin: 32px auto 0; }
   .signup input[type=email] {
     flex: 1; min-width: 0; font: inherit; font-size: 16px; color: var(--fg); background: var(--bg);
@@ -347,9 +347,13 @@
     <div class="wrap">
       <p class="eyebrow">Follow along</p>
       <h2>Be there when the first pickup ships.</h2>
-      <p class="muted" style="max-width:34em;margin:0 auto">Want to hear when there's something new? Drop us a line and we'll keep you posted.</p>
-      <!-- Email signup form returns when the Lumawen API mailing list ships (build plan step 4). -->
-      <div class="cta" style="margin-top:28px"><a class="btn solid" href="mailto:hello@lumawen.com?subject=Keep%20me%20posted">Email me updates</a></div>
+      <p class="muted" style="max-width:34em;margin:0 auto">Want to hear when there's something new? Leave your email and we'll keep you posted.</p>
+      <form class="signup" id="signup" action="/api/list/subscribe" method="post" novalidate>
+        <label class="hp" aria-hidden="true">Leave this empty <input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+        <input type="email" name="email" required autocomplete="email" placeholder="you@example.com" aria-label="Email address">
+        <button class="btn solid" type="submit">Get updates</button>
+      </form>
+      <p class="signup-note" id="signup-note" role="status" aria-live="polite">One email to confirm, then only real news. Unsubscribe anytime.</p>
       <p class="muted" style="max-width:34em;margin:28px auto 0">Or say hello at <a href="mailto:hello@lumawen.com">hello@lumawen.com</a>, and follow us wherever you hang out.</p>
       <div class="links">
         <a href="https://github.com/lumawen">GitHub</a>
@@ -371,6 +375,44 @@
   </div>
 </footer>
 <script>document.getElementById("y").textContent = new Date().getFullYear();</script>
+<script>
+(function () {
+  var form = document.getElementById("signup");
+  var note = document.getElementById("signup-note");
+  var fallback = 'Something went wrong. Email <a href="mailto:hello@lumawen.com?subject=Keep%20me%20posted">hello@lumawen.com</a> and we\'ll add you.';
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var email = form.email.value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      note.className = "signup-note";
+      note.textContent = "Please enter a valid email address.";
+      form.email.focus();
+      return;
+    }
+    var button = form.querySelector("button");
+    button.disabled = true;
+    fetch("/api/list/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email, website: form.website.value })
+    }).then(function (r) {
+      if (r.status === 202) {
+        note.className = "signup-note ok";
+        note.textContent = "Almost done! Check your inbox for a link to confirm.";
+        form.reset();
+      } else if (r.status === 422) {
+        note.className = "signup-note";
+        note.textContent = "Please enter a valid email address.";
+      } else {
+        throw new Error(r.status);
+      }
+    }).catch(function () {
+      note.className = "signup-note";
+      note.innerHTML = fallback;
+    }).then(function () { button.disabled = false; });
+  });
+})();
+</script>
 
 </body>
 </html>

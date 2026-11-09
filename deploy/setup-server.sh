@@ -39,20 +39,20 @@ REPO="https://github.com/lumawen/lumawen.com.git"
 WEB="/var/www/$HOST/html"
 ENV_FILE="$DIR/api/.env"
 say() { printf '\n==> %s\n' "$*"; }
-# Run a command as the normal user with nvm (for pm2) and ~/.local/bin (for uv) on PATH.
+# Run a command as the normal user with pm2 (nvm) and uv (~/.local/bin) on PATH.
+PATH_HELPER="$(dirname "$(readlink -f "$0")")/pm2-path.sh"
 as_user() {
-  sudo -u "$APP_USER" -H bash -c '
-    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    export PATH="$HOME/.local/bin:$PATH"
-    '"$1"
+  sudo -u "$APP_USER" -H bash -c '. "$1"; '"$1" _ "$PATH_HELPER"
 }
 
 say "Checking tools"
 for tool in git psql nginx certbot openssl rsync curl ss; do
   command -v "$tool" >/dev/null || { echo "Missing: $tool" >&2; exit 1; }
 done
-as_user 'command -v pm2' >/dev/null || { echo "Missing: pm2 (for $APP_USER)" >&2; exit 1; }
+as_user 'command -v pm2' >/dev/null || {
+  echo "Missing: pm2 (for $APP_USER). Install it with: npm install -g pm2" >&2
+  exit 1
+}
 if ss -ltnH "sport = :$PORT" | grep -q .; then
   if ! as_user 'pm2 jlist' | grep -q "\"name\":\"lumawen-api-$STAGE\""; then
     echo "Port $PORT is already used by something else:" >&2

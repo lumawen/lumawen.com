@@ -88,8 +88,10 @@ Admins write a newsletter, send themselves a test, then send it now or schedule 
 When it's due, the send worker copies it into the outbox once per subscribed address (a unique
 index makes that happen only once), adding a footer with that person's unsubscribe link and the
 `List-Unsubscribe` + `List-Unsubscribe-Post` headers, so Gmail and others show their own
-unsubscribe button. It then sends at `LUMAWEN_MAIL_PER_SECOND`. On SIGINT/SIGTERM (pm2 restarts)
-the worker finishes its current batch and exits, so nothing is sent twice.
+unsubscribe button. It then sends at `LUMAWEN_MAIL_PER_SECOND`. Each email is sent and committed on
+its own, and on SIGINT/SIGTERM (pm2 restarts) the worker stops after the email in flight. A
+newsletter is skipped for anyone who unsubscribed after it was queued. Sent and failed emails
+are deleted after 30 days.
 
 ## Tests
 

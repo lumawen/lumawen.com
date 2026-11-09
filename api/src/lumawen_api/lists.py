@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .auth import CHECK_EMAIL, DB, Email, Status, _client_ip, _count_attempt, normalize_email
 from .config import get_settings
-from .mail import queue_email
+from .mail import forget_address, queue_email
 from .models import OutboxEmail, Subscriber
 from .security import hash_token, new_token
 
@@ -223,6 +223,7 @@ def unsubscribe(token: Token, db: DB):
     if sub.status != "unsubscribed":
         sub.status = "unsubscribed"
         sub.unsubscribed_at = _now()
+        forget_address(db, sub.email, newsletters_only=True)
         sub.confirm_token_hash = None
         sub.confirm_expires_at = None
         db.commit()

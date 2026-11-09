@@ -7,6 +7,7 @@ takes a one-click POST from mail apps (RFC 8058), for newsletters sent later.
 """
 
 import html
+import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,7 @@ from .models import OutboxEmail, Subscriber
 from .security import hash_token, new_token
 
 router = APIRouter(prefix="/list", tags=["mailing list"])
+log = logging.getLogger("lumawen.lists")
 
 CONFIRM_DAYS = 7
 # Sign-ups from one address (IPv6 /64) per hour, so nobody can mail-bomb a list of strangers.
@@ -69,6 +71,7 @@ def _confirms_last_hour(db) -> int:
 
 def _send_confirm(db, sub: Subscriber) -> None:
     if _confirms_last_hour(db) >= CONFIRMS_PER_HOUR:
+        log.warning("hourly cap of %s confirm emails reached; not emailing", CONFIRMS_PER_HOUR)
         return
     raw, digest = new_token()
     body = (
@@ -230,7 +233,12 @@ def purge_unconfirmed(db) -> int:
     """Forget sign-ups nobody confirmed (called by the send worker)."""
     cutoff = _now() - timedelta(days=UNCONFIRMED_DAYS)
     result = db.execute(
-        delete(Subscriber).where(Subscriber.status == "pending", Subscriber.created_at < cutoff)
+        delete(Subscriber).where(
+            Subscriber.status == "pending",
+            Subscriber.created_at < cutoff,
+            # Not someone who asked again lately and still has a live link.
+            Subscriber.confirm_expires_at.is_(None) | (Subscriber.confirm_expires_at < _now()),
+        )
     )
     db.commit()
     return result.rowcount

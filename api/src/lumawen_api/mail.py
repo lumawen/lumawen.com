@@ -5,8 +5,10 @@ sends are retried. Run the worker with: lumawen-admin send-emails --loop
 """
 
 import logging
+import signal
 import smtplib
 import ssl
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -52,7 +54,12 @@ def build_message(row: OutboxEmail, settings: Settings) -> EmailMessage:
     msg["Subject"] = row.subject
     msg["Date"] = formatdate(localtime=False)
     msg["Message-ID"] = make_msgid(domain="lumawen.com")
-    msg["Auto-Submitted"] = "auto-generated"
+    if row.list_unsubscribe:
+        # Newsletters: mail apps show their own unsubscribe button (RFC 2369 + RFC 8058).
+        msg["List-Unsubscribe"] = f"<{row.list_unsubscribe}>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    else:
+        msg["Auto-Submitted"] = "auto-generated"
     msg.set_content(row.body_text)
     return msg
 
@@ -151,19 +158,38 @@ def send_due(db: Session, sender: Sender, limit: int = 20, pause: float = 0.0) -
     return sent
 
 
+def _stop_on_signals() -> threading.Event:
+    """pm2 stops the worker with SIGINT (deploys) or SIGTERM. Finish the batch, then exit,
+    so an email that went out is always marked sent and never goes out twice."""
+    stop = threading.Event()
+
+    def handler(signum, frame) -> None:
+        log.info("stopping after this batch")
+        stop.set()
+
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, handler)
+        signal.signal(signal.SIGTERM, handler)
+    return stop
+
+
 def run_worker(session_factory: Callable[[], Session], loop: bool, interval: float = 5.0) -> None:
     settings = get_settings()
     pause = 1.0 / settings.mail_per_second if settings.mail_per_second > 0 else 0.0
     from .auth import purge_throttle  # here to avoid an import cycle
     from .lists import purge_unconfirmed
+    from .newsletters import queue_due_newsletters
 
+    stop = _stop_on_signals() if loop else threading.Event()
     last_purge = 0.0
-    while True:
+    while not stop.is_set():
         if time.monotonic() - last_purge > 3600:
             with session_factory() as db:
                 purge_throttle(db)
                 purge_unconfirmed(db)
             last_purge = time.monotonic()
+        with session_factory() as db:
+            queue_due_newsletters(db)
         sender = make_sender(settings)
         try:
             with session_factory() as db:
@@ -175,4 +201,5 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
         if not loop:
             return
         if not sent:
-            time.sleep(interval)
+            stop.wait(interval)
+    log.info("stopped")

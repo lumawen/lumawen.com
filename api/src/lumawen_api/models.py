@@ -123,6 +123,14 @@ class OutboxEmail(Base):
         ),
         Index("email_outbox_due", "send_after", postgresql_where=text("status = 'pending'")),
         Index("email_outbox_kind_created", "kind", "created_at"),
+        # A newsletter goes to each address once, even if queueing runs twice.
+        Index(
+            "email_outbox_newsletter_once",
+            "newsletter_id",
+            "to_address",
+            unique=True,
+            postgresql_where=text("kind = 'newsletter'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -140,6 +148,11 @@ class OutboxEmail(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Newsletters only: which one, and the List-Unsubscribe URL for mail apps' button.
+    newsletter_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("newsletters.id", ondelete="SET NULL"), index=True
+    )
+    list_unsubscribe: Mapped[str | None] = mapped_column(String(500))
 
 
 class LoginThrottle(Base):
@@ -204,3 +217,39 @@ class Subscriber(Base):
     )
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     unsubscribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+NEWSLETTER_STATUSES = ("draft", "scheduled", "sent")
+
+
+class Newsletter(Base):
+    """An email to everyone subscribed. draft -> scheduled -> sent (queued to the outbox).
+
+    When it's due, the send worker copies it into the outbox once per subscriber, each copy
+    with that person's unsubscribe link. Editing is only allowed before that.
+    """
+
+    __tablename__ = "newsletters"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'scheduled', 'sent')", name="newsletters_status_valid"
+        ),
+        Index("newsletters_due", "send_at", postgresql_where=text("status = 'scheduled'")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recipients: Mapped[int | None] = mapped_column(Integer)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

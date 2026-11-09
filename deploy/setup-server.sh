@@ -41,6 +41,7 @@ ENV_FILE="$DIR/api/.env"
 say() { printf '\n==> %s\n' "$*"; }
 # Run a command as the normal user with pm2 (nvm) and uv (~/.local/bin) on PATH.
 PATH_HELPER="$(dirname "$(readlink -f "$0")")/pm2-path.sh"
+[[ -r "$PATH_HELPER" ]] || { echo "Missing $PATH_HELPER: run git -C ~/lumawen-test pull first." >&2; exit 1; }
 as_user() {
   sudo -u "$APP_USER" -H bash -c '. "$1"; '"$1" _ "$PATH_HELPER"
 }
@@ -49,8 +50,8 @@ say "Checking tools"
 for tool in git psql nginx certbot openssl rsync curl ss; do
   command -v "$tool" >/dev/null || { echo "Missing: $tool" >&2; exit 1; }
 done
-as_user 'command -v pm2' >/dev/null || {
-  echo "Missing: pm2 (for $APP_USER). Install it with: npm install -g pm2" >&2
+as_user 'command -v pm2 && command -v node' >/dev/null || {
+  echo "Missing: pm2 or node (for $APP_USER). Check: which pm2 node" >&2
   exit 1
 }
 if ss -ltnH "sport = :$PORT" | grep -q .; then

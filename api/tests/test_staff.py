@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from helpers import signed_up, web_login
-from sqlalchemy import select, update
-from test_lists import as_admin
+from sqlalchemy import func, select, update
+from test_lists import ADMIN_PASSWORD, as_admin
 
 from lumawen_api.db import _session_factory
 from lumawen_api.models import Newsletter, User
@@ -199,3 +199,84 @@ def test_archived_newsletters_are_purged_after_30_days(db):
     db.commit()
     assert purge_archived(db) == 1
     assert sorted(db.scalars(select(Newsletter.subject))) == ["kept", "recent"]
+
+
+def test_two_admins_demoting_each_other_at_once_leave_one(app, client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    as_admin(client)
+    for _ in range(5):
+        a = admin_id()
+        b = make(f"b{_}@example.com", "admin")
+        ca, cb = TestClient(app), as_(app, f"b{_}@example.com")
+        assert web_login(ca, "admin@lumawen.com", ADMIN_PASSWORD).status_code == 200
+        with ThreadPoolExecutor(2) as pool:
+            ra = pool.submit(
+                ca.put, f"/api/admin/users/{b}/role", json={"role": "user"}, headers=ORIGIN
+            )
+            rb = pool.submit(
+                cb.put, f"/api/admin/users/{a}/role", json={"role": "user"}, headers=ORIGIN
+            )
+            codes = sorted([ra.result().status_code, rb.result().status_code])
+        with _session_factory()() as db:
+            admins = db.scalar(select(func.count()).select_from(User).where(User.role == "admin"))
+        assert admins >= 1, codes
+        # put things back for the next round
+        with _session_factory()() as db:
+            db.execute(update(User).where(User.email == "admin@lumawen.com").values(role="admin"))
+            db.execute(update(User).where(User.id == b).values(role="user"))
+            db.commit()
+
+
+def test_lower_roles_cannot_lift_a_higher_suspension(app, client):
+    as_admin(client)
+    uid = make("u@example.com")
+    make("mod@example.com", "moderator")
+    mod = as_(app, "mod@example.com")
+    assert (
+        client.post(f"/api/admin/users/{uid}/suspend", json={}, headers=ORIGIN).status_code == 200
+    )
+    r = mod.post(f"/api/admin/users/{uid}/unsuspend", headers=ORIGIN)
+    assert r.status_code == 403 and "admin" in r.json()["detail"]
+    assert client.post(f"/api/admin/users/{uid}/unsuspend", headers=ORIGIN).status_code == 200
+
+
+def test_create_admin_lifts_a_suspension(client):
+    from lumawen_api.cli import create_admin
+
+    as_admin(client)
+    with _session_factory()() as db:
+        db.execute(
+            update(User)
+            .where(User.email == "admin@lumawen.com")
+            .values(suspended_at=datetime.now(UTC))
+        )
+        db.commit()
+    create_admin("admin@lumawen.com", None)
+    with _session_factory()() as db:
+        assert db.scalar(select(User.suspended_at).where(User.email == "admin@lumawen.com")) is None
+
+
+def test_send_refuses_a_version_the_admin_has_not_seen(app, client):
+    as_admin(client)
+    make("rae@example.com", "contributor")
+    rae = as_(app, "rae@example.com")
+    n = client.post(
+        "/api/admin/newsletters", json={"subject": "Hi", "body_text": "v1"}, headers=ORIGIN
+    ).json()
+    seen = n["updated_at"]
+    rae.patch(f"/api/admin/newsletters/{n['id']}", json={"body_text": "v2"}, headers=ORIGIN)
+    r = client.post(
+        f"/api/admin/newsletters/{n['id']}/schedule", json={"seen_version": seen}, headers=ORIGIN
+    )
+    assert r.status_code == 409
+
+
+def test_erasing_scrubs_the_activity_log(client):
+    as_admin(client)
+    uid = make("forget-me@example.com")
+    client.post(f"/api/admin/users/{uid}/suspend", json={}, headers=ORIGIN)
+    client.delete(f"/api/admin/users/{uid}", headers=ORIGIN)
+    entries = client.get("/api/admin/activity").json()["entries"]
+    assert all("forget-me" not in e["target"] for e in entries)
+    assert [e["target"] for e in entries] == ["(erased account)", "(erased)"]

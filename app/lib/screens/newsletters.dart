@@ -223,7 +223,7 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
     );
     if (!ok) return;
     final n = await _run(
-      () => widget.api.schedule(_n!.id, null),
+      () => widget.api.schedule(_n!.id, null, seenVersion: _n!.version),
       done: 'Sending. It goes out over the next few minutes.',
     );
     if (n != null && mounted) Navigator.of(context).pop();
@@ -251,7 +251,7 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
       return;
     }
     final n = await _run(
-      () => widget.api.schedule(_n!.id, when),
+      () => widget.api.schedule(_n!.id, when, seenVersion: _n!.version),
       done: 'Scheduled for ${shortDate(when)}',
     );
     if (n != null && mounted) setState(() => _n = n);

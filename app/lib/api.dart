@@ -127,6 +127,7 @@ class Newsletter {
       failed = (j['delivery'] as Map)['failed'] as int,
       archivedAt = _date(j['archived_at']),
       deleteAfter = _date(j['delete_after']),
+      version = j['updated_at'] as String,
       updatedAt = DateTime.parse(j['updated_at'] as String).toLocal();
   final String id;
   final String subject;
@@ -140,6 +141,9 @@ class Newsletter {
   final int failed;
   final DateTime? archivedAt;
   final DateTime? deleteAfter;
+
+  /// updated_at exactly as the server sent it: proves which version you saw before sending.
+  final String version;
   final DateTime updatedAt;
 }
 
@@ -310,10 +314,10 @@ class Api {
 
   Future<Newsletter> sendTest(String id) => _newsletter('POST', 'admin/newsletters/$id/test', {});
 
-  Future<Newsletter> schedule(String id, DateTime? sendAt) => _newsletter(
+  Future<Newsletter> schedule(String id, DateTime? sendAt, {String? seenVersion}) => _newsletter(
     'POST',
     'admin/newsletters/$id/schedule',
-    {if (sendAt != null) 'send_at': sendAt.toUtc().toIso8601String()},
+    {if (sendAt != null) 'send_at': sendAt.toUtc().toIso8601String(), 'seen_version': ?seenVersion},
   );
 
   Future<Newsletter> cancel(String id) => _newsletter('POST', 'admin/newsletters/$id/cancel');

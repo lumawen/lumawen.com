@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 
-from .audit import record
+from .audit import erase_from_log, record
 from .auth import (
     DB,
     AdminUser,
@@ -31,6 +31,7 @@ Role = Literal["user", "contributor", "moderator", "security", "admin"]
 assert set(Role.__args__) == set(ROLES)
 
 # Whom each role may suspend or unsuspend. Admins can't be suspended except by an admin.
+RANK = {"moderator": 1, "security": 2, "admin": 3}
 CAN_SUSPEND: dict[str, set[str]] = {
     "moderator": {"user", "contributor"},
     "security": {"user", "contributor", "moderator"},
@@ -140,7 +141,10 @@ def list_users(
 
 
 def _target(db, user_id: uuid.UUID) -> User:
-    user = db.get(User, user_id, with_for_update=True)
+    # Lock every admin row first, always in id order, then the target: staff actions on
+    # admins run one at a time and can't deadlock (see _keep_an_admin).
+    db.execute(select(User.id).where(User.role == "admin").order_by(User.id).with_for_update())
+    user = db.get(User, user_id, with_for_update=True, populate_existing=True)
     if user is None:
         raise HTTPException(404, "No such user.")
     return user
@@ -149,6 +153,20 @@ def _target(db, user_id: uuid.UUID) -> User:
 def _not_self(actor: User, target: User, what: str) -> None:
     if actor.id == target.id:
         raise HTTPException(400, f"You can't {what} your own account.")
+
+
+def _keep_an_admin(db, target: User) -> None:
+    """Refuse to demote, suspend or delete the last active admin. _target already holds every
+    admin row's lock, so two admins acting on each other at once can't both succeed."""
+    if target.role != "admin" or target.suspended_at is not None:
+        return
+    others = db.scalars(
+        select(User.id).where(
+            User.role == "admin", User.suspended_at.is_(None), User.id != target.id
+        )
+    ).all()
+    if not others:
+        raise HTTPException(409, "There must always be at least one active admin.")
 
 
 class RoleIn(BaseModel):
@@ -160,6 +178,8 @@ def set_role(user_id: uuid.UUID, body: RoleIn, admin: AdminUser, db: DB) -> Staf
     target = _target(db, user_id)
     _not_self(admin, target, "change the role of")
     old = target.role
+    if old == "admin" and body.role != "admin":
+        _keep_an_admin(db, target)
     if old != body.role:
         target.role = body.role
         record(db, admin, "user.role", target.email, before=old, after=body.role)
@@ -178,11 +198,16 @@ def suspend(user_id: uuid.UUID, body: SuspendIn, actor: StaffUser, db: DB) -> St
     _not_self(actor, target, "suspend")
     if target.role not in CAN_SUSPEND[actor.role]:
         raise HTTPException(403, f"Your role can't suspend a {target.role}.")
+    _keep_an_admin(db, target)
+    reason = body.reason.strip() or None
     if target.suspended_at is None:
         target.suspended_at = datetime.now(UTC)
-        target.suspended_reason = body.reason.strip() or None
         _revoke_all(db, target)
-        record(db, actor, "user.suspend", target.email, reason=target.suspended_reason)
+    elif RANK[actor.role] < RANK.get(target.suspended_by_role or "", 0):
+        raise HTTPException(403, f"A {target.suspended_by_role} suspended this account.")
+    target.suspended_reason = reason
+    target.suspended_by_role = actor.role
+    record(db, actor, "user.suspend", target.email, reason=reason)
     db.commit()
     return _details(db, [target])[0]
 
@@ -192,9 +217,14 @@ def unsuspend(user_id: uuid.UUID, actor: StaffUser, db: DB) -> StaffUserOut:
     target = _target(db, user_id)
     if target.role not in CAN_SUSPEND[actor.role]:
         raise HTTPException(403, f"Your role can't unsuspend a {target.role}.")
+    if RANK[actor.role] < RANK.get(target.suspended_by_role or "", 0):
+        raise HTTPException(
+            403, f"A {target.suspended_by_role} suspended this account, so only they can lift it."
+        )
     if target.suspended_at is not None:
         target.suspended_at = None
         target.suspended_reason = None
+        target.suspended_by_role = None
         record(db, actor, "user.unsuspend", target.email)
     db.commit()
     return _details(db, [target])[0]
@@ -217,8 +247,10 @@ def delete_user(user_id: uuid.UUID, admin: AdminUser, db: DB) -> Response:
     """Delete the account and its sessions and emails. Mailing-list sign-ups are separate."""
     target = _target(db, user_id)
     _not_self(admin, target, "delete")
-    record(db, admin, "user.delete", target.email, role=target.role)
+    _keep_an_admin(db, target)
     forget_address(db, target.email)
+    erase_from_log(db, target.email)
+    record(db, admin, "user.delete", "(erased account)", role=target.role)
     db.execute(delete(User).where(User.id == target.id))  # the database cascades the rest
     db.commit()
     return Response(status_code=204)

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
-# Who can do what: see permissions.py.
+# Who can do what: see the role aliases in auth.py and CAN_SUSPEND in staff.py.
 ROLES = ("user", "contributor", "moderator", "security", "admin")
 
 
@@ -59,6 +59,7 @@ class User(Base):
     # A suspended user can't sign in; suspending also ends their sessions.
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     suspended_reason: Mapped[str | None] = mapped_column(String(200))
+    suspended_by_role: Mapped[str | None] = mapped_column(String(20))  # who may lift it
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

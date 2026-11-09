@@ -56,14 +56,17 @@ class _ActivityTabState extends State<ActivityTab> with AutomaticKeepAliveClient
     super.dispose();
   }
 
+  int _request = 0; // only the newest search's answer is shown
+
   Future<void> _load({bool more = false}) async {
+    final request = ++_request;
     setState(() => _loading = true);
     try {
       final (total, entries) = await widget.api.activity(
         q: _query,
         offset: more ? _entries.length : 0,
       );
-      if (!mounted) return;
+      if (!mounted || request != _request) return;
       setState(() {
         _total = total;
         if (!more) _entries.clear();

@@ -22,8 +22,7 @@ from .auth import (
     UserOut,
     _revoke_all,
 )
-from .mail import forget_address
-from .models import ROLES, AuditEntry, AuthSession, User, UserIdentity
+from .models import ROLES, AuditEntry, AuthSession, OutboxEmail, User, UserIdentity
 
 router = APIRouter(prefix="/admin", tags=["staff"])
 
@@ -248,7 +247,13 @@ def delete_user(user_id: uuid.UUID, admin: AdminUser, db: DB) -> Response:
     target = _target(db, user_id)
     _not_self(admin, target, "delete")
     _keep_an_admin(db, target)
-    forget_address(db, target.email)
+    # Their account emails go; list emails stay, since the mailing list is separate.
+    db.execute(
+        delete(OutboxEmail).where(
+            OutboxEmail.to_address == target.email,
+            OutboxEmail.kind.not_in(("newsletter", "list_confirm")),
+        )
+    )
     erase_from_log(db, target.email)
     record(db, admin, "user.delete", "(erased account)", role=target.role)
     db.execute(delete(User).where(User.id == target.id))  # the database cascades the rest

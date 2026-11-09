@@ -238,11 +238,12 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
     last_purge = 0.0
     while not stop.is_set():
         if time.monotonic() - last_purge > 3600:
-            with session_factory() as db:
-                purge_throttle(db)
-                purge_unconfirmed(db)
-                purge_outbox(db)
-                purge_archived(db)
+            for purge in (purge_throttle, purge_unconfirmed, purge_outbox, purge_archived):
+                try:  # a failed clean-up must never stop emails going out
+                    with session_factory() as db:
+                        purge(db)
+                except Exception:
+                    log.exception("%s failed", purge.__name__)
             last_purge = time.monotonic()
         try:
             with session_factory() as db:

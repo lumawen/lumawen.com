@@ -270,6 +270,11 @@ def test_send_refuses_a_version_the_admin_has_not_seen(app, client):
         f"/api/admin/newsletters/{n['id']}/schedule", json={"seen_version": seen}, headers=ORIGIN
     )
     assert r.status_code == 409
+    fresh = client.get(f"/api/admin/newsletters/{n['id']}").json()["updated_at"]
+    r = client.post(
+        f"/api/admin/newsletters/{n['id']}/schedule", json={"seen_version": fresh}, headers=ORIGIN
+    )
+    assert r.status_code == 200, r.text
 
 
 def test_erasing_scrubs_the_activity_log(client):

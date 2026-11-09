@@ -58,6 +58,7 @@ mixin Busy<T extends StatefulWidget> on State<T> {
   String? error;
 
   Future<void> run(Future<void> Function() action) async {
+    if (busy) return; // e.g. Enter pressed again while signing in
     setState(() {
       busy = true;
       error = null;

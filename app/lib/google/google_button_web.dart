@@ -25,16 +25,22 @@ class _GoogleButtonState extends State<GoogleButton> {
   void initState() {
     super.initState();
     _initialized ??= GoogleSignIn.instance.initialize(clientId: widget.clientId);
-    _initialized!.then((_) {
-      if (!mounted) return;
-      _events = GoogleSignIn.instance.authenticationEvents.listen((event) {
-        if (event is GoogleSignInAuthenticationEventSignIn) {
-          final token = event.user.authentication.idToken;
-          if (token != null) widget.onIdToken(token);
-        }
-      });
-      setState(() => _ready = true);
-    });
+    _initialized!.then(
+      (_) {
+        if (!mounted) return;
+        _events = GoogleSignIn.instance.authenticationEvents.listen((event) {
+          if (event is GoogleSignInAuthenticationEventSignIn) {
+            final token = event.user.authentication.idToken;
+            if (token != null) widget.onIdToken(token);
+          }
+        });
+        setState(() => _ready = true);
+      },
+      onError: (Object e) {
+        _initialized = null; // try again next time the sign-in page opens
+        debugPrint('Google sign-in unavailable: $e');
+      },
+    );
   }
 
   @override

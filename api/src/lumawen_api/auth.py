@@ -411,6 +411,8 @@ def current_session(request: Request, db: DB) -> AuthSession:
             raise unauthorized
         if request.method not in SAFE_METHODS and not _same_origin(request):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
+    if session.user.suspended_at is not None:
+        raise unauthorized
     session.last_used_at = _now()
     db.commit()
     return session
@@ -426,13 +428,21 @@ def current_user(session: CurrentSession) -> User:
 CurrentUser = Annotated[User, Depends(current_user)]
 
 
-def require_admin(user: CurrentUser) -> User:
-    if user.role != "admin":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only.")
-    return user
+def _role_in(*roles: str):
+    def check(user: CurrentUser) -> User:
+        if user.role not in roles:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Your role can't do that.")
+        return user
+
+    return Depends(check)
 
 
-AdminUser = Annotated[User, Depends(require_admin)]
+# Who can do what. Roles: user < contributor (drafts newsletters) < moderator (users) <
+# security (users, sign-outs, activity log) < admin (everything).
+AdminUser = Annotated[User, _role_in("admin")]
+WriterUser = Annotated[User, _role_in("admin", "contributor")]
+StaffUser = Annotated[User, _role_in("admin", "security", "moderator")]
+SecurityUser = Annotated[User, _role_in("admin", "security")]
 
 
 # ---- routes ----------------------------------------------------------------------------------
@@ -526,10 +536,16 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
     return sign_in(db, user, body.client, body.device_name, response)
 
 
+SUSPENDED = "This account is suspended. Email hello@lumawen.com if you think that's a mistake."
+
+
 def sign_in(
     db: Session, user: User, client: str, device_name: str | None, response: Response
 ) -> LoginOut:
     """Start a session for a user who has proved who they are, and commit."""
+    if user.suspended_at is not None:
+        db.commit()  # keep what the caller already did (e.g. a confirmed email)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, SUSPENDED)
     tokens = _start_session(db, user, client, device_name)
     db.commit()
     db.refresh(user)  # load server defaults such as created_at
@@ -584,7 +600,7 @@ def refresh(body: RefreshIn, db: DB) -> LoginOut:
             reused.revoked_at = _now()
             db.commit()
         raise unauthorized
-    if not _live(session):
+    if not _live(session) or session.user.suspended_at is not None:
         raise unauthorized
     raw, new_digest = new_token()
     session.previous_token_hash = session.token_hash

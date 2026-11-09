@@ -29,7 +29,6 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 | `POST /auth/forgot-password`, `/auth/reset-password` | One-time reset link (60 min). A reset signs out every device. |
 | `POST /auth/google` | Sign in with a Google ID token (from the web dashboard or the Android app). Links to the account with the same email, or creates one. |
 | `GET /me` | The signed-in user. |
-| `GET /admin/users` | Admins only. |
 
 Five wrong passwords from one IP for one email pause that pair for 15 minutes, and 50 from anywhere
 pause the email for an hour (a reset lifts it). Unknown emails are counted the same way, and every
@@ -71,16 +70,40 @@ With `LUMAWEN_MAIL_BACKEND=console` (the default) the worker only logs emails.
 Confirm tokens are stored as hashes. Each subscriber's unsubscribe token is stored as-is so every
 newsletter can print it (`lists.unsubscribe_url`); it can only unsubscribe.
 
+## Roles and staff tools
+
+| Role | Can |
+| --- | --- |
+| `user` | Use their own account. |
+| `contributor` | Write, edit and test newsletter drafts (tests go only to themselves). |
+| `moderator` | Find users; suspend and unsuspend users and contributors. |
+| `security` | Moderator, plus suspend moderators, sign anyone but an admin out everywhere, read the activity log. |
+| `admin` | Everything: roles, account deletion, mailing list, scheduling and sending. |
+
+| Route | What it does |
+| --- | --- |
+| `GET /admin/users` | Moderators, security, admins: `q=` (email or name), `role=`, `suspended=`; counts per role. |
+| `PUT /admin/users/{id}/role` | Admins: `{role}`. Not your own. |
+| `POST /admin/users/{id}/suspend`, `/unsuspend` | `{reason}`. Suspending ends every session and blocks sign-in. |
+| `POST /admin/users/{id}/sign-out` | Security, admins: end every session. |
+| `DELETE /admin/users/{id}` | Admins: delete the account (not your own). |
+| `GET /admin/activity` | Security, admins: every staff action, newest first, `q=` search. |
+
+Make the first admin with `lumawen-admin create-admin`; give other roles from the Users tab.
+
 ## Newsletters
 
-Admins write a newsletter, send themselves a test, then send it now or schedule it. All under
-`/api/admin/newsletters` (admins only; cookie requests must come from our own origin):
+Writers (admins and contributors) write a newsletter and send themselves a test; admins then
+send it now or schedule it. All under `/api/admin/newsletters` (cookie requests must come from
+our own origin):
 
 | Route | What it does |
 | --- | --- |
 | `POST /admin/newsletters` | New draft: `{subject, body_text}` (plain text). |
-| `GET /admin/newsletters`, `GET /{id}` | Newsletters with status and delivery counts (pending, sent, failed). |
-| `PATCH /{id}`, `DELETE /{id}` | Edit or delete, until it's sent. |
+| `GET /admin/newsletters`, `GET /{id}` | Newsletters with status and delivery counts (pending, sent, failed); `archived=true` for archived ones. |
+| `PATCH /{id}` | Edit, until it's sent (contributors: drafts only). |
+| `DELETE /{id}` | Draft: deleted. Scheduled (admins): cancelled and deleted. Sent (admins): archived, deleted for good after 30 days. |
+| `POST /{id}/restore` | Admins: un-archive. |
 | `POST /{id}/test` | One `[Test]` copy to you (or `{to}`), right away. 20 an hour. |
 | `POST /{id}/schedule` | `{send_at}` with a time zone, or `{}` for now. |
 | `POST /{id}/cancel` | Back to draft, until the send worker picks it up. |

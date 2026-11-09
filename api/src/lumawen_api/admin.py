@@ -1,4 +1,4 @@
-"""Admin-only API. The dashboard's admin tabs (users, mailing list, messages) build on this."""
+"""Admin-only API for the mailing list. Users and the activity log are in staff.py."""
 
 import csv
 import io
@@ -11,30 +11,12 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 
-from .auth import DB, AdminUser, UserOut
+from .audit import record
+from .auth import DB, AdminUser
 from .mail import forget_address
-from .models import Subscriber, User
+from .models import Subscriber
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-class UserPage(BaseModel):
-    total: int
-    users: list[UserOut]
-
-
-@router.get("/users", response_model=UserPage)
-def list_users(
-    _: AdminUser,
-    db: DB,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-) -> UserPage:
-    total = db.scalar(select(func.count()).select_from(User))
-    users = db.scalars(
-        select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
-    ).all()
-    return UserPage(total=total, users=[UserOut.of(u) for u in users])
 
 
 # ---- mailing list ----------------------------------------------------------------------------
@@ -146,7 +128,7 @@ def export_subscribers(
 
 
 @router.delete("/subscribers/{subscriber_id}", status_code=204)
-def delete_subscriber(subscriber_id: uuid.UUID, _: AdminUser, db: DB) -> Response:
+def delete_subscriber(subscriber_id: uuid.UUID, admin: AdminUser, db: DB) -> Response:
     """Erase someone completely (a privacy request). To just stop emails, they unsubscribe."""
     email = db.scalar(
         delete(Subscriber).where(Subscriber.id == subscriber_id).returning(Subscriber.email)
@@ -154,5 +136,6 @@ def delete_subscriber(subscriber_id: uuid.UUID, _: AdminUser, db: DB) -> Respons
     if email is None:
         raise HTTPException(404, "No such subscriber.")
     forget_address(db, email)
+    record(db, admin, "subscriber.erase", email)
     db.commit()
     return Response(status_code=204)

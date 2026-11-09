@@ -38,6 +38,29 @@ const player = {
   'created_at': '2026-11-09T00:00:00Z',
 };
 
+Map<String, Object?> member(Map<String, Object?> user, {String? suspendedAt}) => {
+  ...user,
+  'suspended_at': suspendedAt,
+  'suspended_reason': null,
+  'last_seen_at': null,
+  'has_password': true,
+  'has_google': false,
+  'sessions': 1,
+};
+
+Map<String, Object?> userPage(List<Map<String, Object?>> users) => {
+  'total': users.length,
+  'counts': {
+    'user': 1,
+    'contributor': 0,
+    'moderator': 1,
+    'security': 0,
+    'admin': 0,
+    'suspended': 0,
+  },
+  'users': users,
+};
+
 void main() {
   testWidgets('signed out: shows the sign-in form', (tester) async {
     final api = fakeApi(
@@ -63,10 +86,7 @@ void main() {
           'counts': {'pending': 0, 'subscribed': 0, 'unsubscribed': 0},
           'subscribers': [],
         },
-        '/api/admin/users' => {
-          'total': 1,
-          'users': [admin],
-        },
+        '/api/admin/users' => userPage([member(admin)]),
         _ => {'_status': 404},
       },
     );
@@ -75,6 +95,59 @@ void main() {
     expect(find.text('Newsletters'), findsWidgets);
     expect(find.text('Mailing list'), findsOneWidget);
     expect(find.textContaining('Nothing written yet'), findsOneWidget);
+  });
+
+  testWidgets('moderator: only the Users tab, with search and suspend', (tester) async {
+    final mod = {
+      ...player,
+      'id': '00000000-0000-0000-0000-000000000003',
+      'role': 'moderator',
+      'email': 'mod@example.com',
+    };
+    final queries = <String?>[];
+    final api = fakeApi((r) {
+      if (r.url.path == '/api/admin/users') queries.add(r.url.queryParameters['q']);
+      return switch (r.url.path) {
+        '/api/me' => mod,
+        '/api/admin/users' => userPage([member(player), member(mod)]),
+        _ => {'_status': 404},
+      };
+    });
+    await tester.pumpWidget(LumawenApp(api: api));
+    await tester.pumpAndSettle();
+    expect(find.text('Users'), findsOneWidget);
+    expect(find.text('Newsletters'), findsNothing);
+    expect(find.text('Mailing list'), findsNothing);
+    expect(find.text('Activity'), findsNothing);
+    await tester.enterText(find.byType(TextField), 'play');
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    expect(queries.last, 'play');
+    await tester.tap(find.text('player@example.com'));
+    await tester.pumpAndSettle();
+    expect(find.text('Suspend'), findsOneWidget);
+    expect(find.text('Delete account'), findsNothing); // admins only
+    expect(find.text('Sign out everywhere'), findsNothing); // security and admins
+  });
+
+  testWidgets('contributor: can write but not send', (tester) async {
+    final writer = {...player, 'role': 'contributor'};
+    final api = fakeApi(
+      (r) => switch (r.url.path) {
+        '/api/me' => writer,
+        '/api/admin/newsletters' => {'total': 0, 'newsletters': []},
+        _ => {'_status': 404},
+      },
+    );
+    await tester.pumpWidget(LumawenApp(api: api));
+    await tester.pumpAndSettle();
+    expect(find.text('Users'), findsNothing);
+    await tester.tap(find.text('Write'));
+    await tester.pumpAndSettle();
+    expect(find.text('Send me a test'), findsOneWidget);
+    expect(find.text('Send now'), findsNothing);
+    expect(find.text('Schedule'), findsNothing);
+    expect(find.textContaining('an admin schedules or sends it'), findsOneWidget);
   });
 
   testWidgets('signed out: an email confirm link opens the confirm screen', (tester) async {

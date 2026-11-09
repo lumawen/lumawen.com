@@ -232,7 +232,7 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
     pause = 1.0 / settings.mail_per_second if settings.mail_per_second > 0 else 0.0
     from .auth import purge_throttle  # here to avoid an import cycle
     from .lists import purge_unconfirmed
-    from .newsletters import queue_due_newsletters
+    from .newsletters import purge_archived, queue_due_newsletters
 
     stop = _stop_on_signals() if loop else threading.Event()
     last_purge = 0.0
@@ -242,6 +242,7 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
                 purge_throttle(db)
                 purge_unconfirmed(db)
                 purge_outbox(db)
+                purge_archived(db)
             last_purge = time.monotonic()
         try:
             with session_factory() as db:

@@ -125,7 +125,14 @@ def test_send_now_queues_one_copy_per_subscriber(client, db):
         ).status_code
         == 409
     )
-    assert client.delete(f"/api/admin/newsletters/{nid}", headers=ORIGIN).status_code == 409
+
+    # Deleting a sent one archives it: hidden from the list, restorable, purged after 30 days.
+    assert client.delete(f"/api/admin/newsletters/{nid}", headers=ORIGIN).status_code == 204
+    assert client.get("/api/admin/newsletters").json()["total"] == 0
+    [archived] = client.get("/api/admin/newsletters?archived=true").json()["newsletters"]
+    assert archived["id"] == nid and archived["delete_after"]
+    assert post(client, f"/{nid}/restore").json()["archived_at"] is None
+    assert client.get("/api/admin/newsletters").json()["total"] == 1
 
 
 def test_the_one_click_link_in_a_newsletter_unsubscribes(client, db):

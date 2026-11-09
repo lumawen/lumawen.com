@@ -76,7 +76,7 @@ def _clean_tables(request) -> Iterator[None]:
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE users, subscribers, newsletters, email_outbox, login_throttle"
+                "TRUNCATE users, subscribers, newsletters, email_outbox, login_throttle, audit_log"
                 " RESTART IDENTITY CASCADE"
             )
         )

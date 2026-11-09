@@ -1,8 +1,9 @@
-// After sign-in: admins get the Newsletters, Mailing list and Users tabs.
+// After sign-in: staff get the tabs their role allows (see User in api.dart).
 import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../theme.dart';
+import 'activity.dart';
 import 'mailing_list.dart';
 import 'newsletters.dart';
 import 'users.dart';
@@ -95,7 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(width: 8),
       ],
     );
-    if (!user.isAdmin) {
+    if (!user.isStaff) {
       return Scaffold(
         appBar: bar,
         body: Center(
@@ -109,8 +110,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
+    final tabs = <(String, Widget)>[
+      if (user.canWrite) ('Newsletters', NewslettersTab(api: widget.api, me: user)),
+      if (user.isAdmin) ('Mailing list', MailingListTab(api: widget.api)),
+      if (user.canManageUsers) ('Users', UsersTab(api: widget.api, me: user)),
+      if (user.canSeeActivity) ('Activity', ActivityTab(api: widget.api)),
+    ];
     return DefaultTabController(
-      length: 3,
+      length: tabs.length,
       child: Scaffold(
         appBar: AppBar(
           automaticallyImplyLeading: false,
@@ -118,23 +125,13 @@ class _HomeScreenState extends State<HomeScreen> {
           titleSpacing: bar.titleSpacing,
           title: bar.title,
           actions: bar.actions,
-          bottom: const TabBar(
+          bottom: TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            tabs: [
-              Tab(text: 'Newsletters'),
-              Tab(text: 'Mailing list'),
-              Tab(text: 'Users'),
-            ],
+            tabs: [for (final (label, _) in tabs) Tab(text: label)],
           ),
         ),
-        body: TabBarView(
-          children: [
-            NewslettersTab(api: widget.api),
-            MailingListTab(api: widget.api),
-            UsersTab(api: widget.api),
-          ],
-        ),
+        body: TabBarView(children: [for (final (_, tab) in tabs) tab]),
       ),
     );
   }

@@ -1,4 +1,5 @@
 // Newsletters tab: write, test, send or schedule emails to everyone subscribed.
+// Contributors write and test drafts; admins also schedule, send, delete and restore.
 import 'package:flutter/material.dart';
 
 import '../api.dart';
@@ -7,8 +8,9 @@ import 'account.dart' show showError;
 import 'home.dart';
 
 class NewslettersTab extends StatefulWidget {
-  const NewslettersTab({super.key, required this.api});
+  const NewslettersTab({super.key, required this.api, required this.me});
   final Api api;
+  final User me;
 
   @override
   State<NewslettersTab> createState() => _NewslettersTabState();
@@ -16,6 +18,7 @@ class NewslettersTab extends StatefulWidget {
 
 class _NewslettersTabState extends State<NewslettersTab> with AutomaticKeepAliveClientMixin {
   List<Newsletter>? _items;
+  bool _archived = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -28,7 +31,7 @@ class _NewslettersTabState extends State<NewslettersTab> with AutomaticKeepAlive
 
   Future<void> _load() async {
     try {
-      final items = await widget.api.newsletters();
+      final items = await widget.api.newsletters(archived: _archived);
       if (mounted) setState(() => _items = items);
     } catch (e) {
       if (mounted) showError(context, e);
@@ -38,7 +41,7 @@ class _NewslettersTabState extends State<NewslettersTab> with AutomaticKeepAlive
   Future<void> _open([Newsletter? n]) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => NewsletterEditor(api: widget.api, newsletter: n),
+        builder: (_) => NewsletterEditor(api: widget.api, me: widget.me, newsletter: n),
       ),
     );
     _load();
@@ -71,6 +74,24 @@ class _NewslettersTabState extends State<NewslettersTab> with AutomaticKeepAlive
                   ],
                 ),
                 const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final archived in [false, true])
+                      ChoiceChip(
+                        label: Text(archived ? 'Archived' : 'Current'),
+                        selected: _archived == archived,
+                        onSelected: (_) {
+                          setState(() {
+                            _archived = archived;
+                            _items = null;
+                          });
+                          _load();
+                        },
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
                 if (items == null)
                   const Padding(
                     padding: EdgeInsets.all(32),
@@ -80,7 +101,9 @@ class _NewslettersTabState extends State<NewslettersTab> with AutomaticKeepAlive
                   Padding(
                     padding: const EdgeInsets.all(32),
                     child: Text(
-                      'Nothing written yet. Your first newsletter starts with Write.',
+                      _archived
+                          ? 'Nothing archived. Deleted sent newsletters wait here for 30 days.'
+                          : 'Nothing written yet. Your first newsletter starts with Write.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: muted),
                     ),
@@ -102,18 +125,21 @@ class _NewslettersTabState extends State<NewslettersTab> with AutomaticKeepAlive
   }
 }
 
-String statusLine(Newsletter n) => switch (n.status) {
-  'scheduled' => 'Scheduled for ${shortDate(n.sendAt!)}',
-  'sent' =>
-    'Sent ${shortDate(n.queuedAt!)} to ${n.recipients} · '
-        '${n.sent} delivered${n.pending > 0 ? ', ${n.pending} sending' : ''}'
-        '${n.failed > 0 ? ', ${n.failed} failed' : ''}',
-  _ => 'Draft · edited ${shortDate(n.updatedAt)}',
-};
+String statusLine(Newsletter n) => n.deleteAfter != null
+    ? 'Archived · deleted for good ${shortDate(n.deleteAfter!)}'
+    : switch (n.status) {
+        'scheduled' => 'Scheduled for ${shortDate(n.sendAt!)}',
+        'sent' =>
+          'Sent ${shortDate(n.queuedAt!)} to ${n.recipients} · '
+              '${n.sent} delivered${n.pending > 0 ? ', ${n.pending} sending' : ''}'
+              '${n.failed > 0 ? ', ${n.failed} failed' : ''}',
+        _ => 'Draft · edited ${shortDate(n.updatedAt)}',
+      };
 
 class NewsletterEditor extends StatefulWidget {
-  const NewsletterEditor({super.key, required this.api, this.newsletter});
+  const NewsletterEditor({super.key, required this.api, required this.me, this.newsletter});
   final Api api;
+  final User me;
   final Newsletter? newsletter;
 
   @override
@@ -126,7 +152,10 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
   late final _body = TextEditingController(text: _n?.bodyText);
   bool _busy = false;
 
-  bool get _editable => _n == null || _n!.status != 'sent';
+  bool get _admin => widget.me.isAdmin;
+
+  /// Contributors can only change drafts; admins anything not yet sent.
+  bool get _editable => _n == null || _n!.status == 'draft' || (_admin && _n!.status != 'sent');
 
   /// Unsaved changes: the fields differ from what the server has (it trims the subject).
   bool get _dirty {
@@ -234,13 +263,35 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
   }
 
   Future<void> _delete() async {
-    if (_n == null) return Navigator.of(context).pop();
-    if (!await _confirm('Delete this draft?', 'It\'s gone for good.', 'Delete')) return;
+    final n = _n;
+    if (n == null) return Navigator.of(context).pop();
+    final (title, text, action, done) = switch (n.status) {
+      'scheduled' => (
+        'Cancel and delete?',
+        'It won\'t be sent, and it\'s gone for good.',
+        'Delete',
+        'Cancelled and deleted',
+      ),
+      'sent' => (
+        'Archive this newsletter?',
+        'It moves to Archived and is deleted for good after 30 days. You can restore it until '
+            'then. It was already sent, so nobody loses their copy.',
+        'Archive',
+        'Archived',
+      ),
+      _ => ('Delete this draft?', 'It\'s gone for good.', 'Delete', 'Deleted'),
+    };
+    if (!await _confirm(title, text, action)) return;
     final ok = await _run(() async {
-      await widget.api.deleteNewsletter(_n!.id);
+      await widget.api.deleteNewsletter(n.id);
       return true;
-    }, done: 'Deleted');
+    }, done: done);
     if (ok == true && mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _restore() async {
+    final n = await _run(() => widget.api.restore(_n!.id), done: 'Restored');
+    if (n != null && mounted) setState(() => _n = n);
   }
 
   Future<bool> _confirm(String title, String text, String action) async =>
@@ -286,9 +337,13 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
       appBar: AppBar(
         title: Text(n == null ? 'New newsletter' : statusLabel(n.status)),
         actions: [
-          if (_editable && n?.status != 'scheduled')
+          if (n?.archivedAt == null && (n == null || n.status == 'draft' || _admin))
             IconButton(
-              tooltip: 'Delete draft',
+              tooltip: switch (n?.status) {
+                'sent' => 'Archive',
+                'scheduled' => 'Cancel and delete',
+                _ => 'Delete draft',
+              },
               onPressed: _busy ? null : _delete,
               icon: const Icon(Icons.delete_outline),
             ),
@@ -344,16 +399,23 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
                         onPressed: _busy ? null : _test,
                         child: const Text('Send me a test'),
                       ),
-                      OutlinedButton(
-                        onPressed: _busy ? null : _schedule,
-                        child: const Text('Schedule'),
-                      ),
-                      FilledButton(
-                        onPressed: _busy ? null : _sendNow,
-                        child: const Text('Send now'),
-                      ),
+                      if (_admin) ...[
+                        OutlinedButton(
+                          onPressed: _busy ? null : _schedule,
+                          child: const Text('Schedule'),
+                        ),
+                        FilledButton(
+                          onPressed: _busy ? null : _sendNow,
+                          child: const Text('Send now'),
+                        ),
+                      ],
                     ],
-                    if (n?.status == 'scheduled') ...[
+                    if (n?.archivedAt != null && _admin)
+                      FilledButton(
+                        onPressed: _busy ? null : _restore,
+                        child: const Text('Restore'),
+                      ),
+                    if (n?.status == 'scheduled' && _admin) ...[
                       OutlinedButton(
                         onPressed: _busy ? null : _test,
                         child: const Text('Send me a test'),
@@ -365,6 +427,14 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
                     ],
                   ],
                 ),
+                if (!_admin && (n == null || n.status == 'draft'))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(
+                      'When it\'s ready, an admin schedules or sends it.',
+                      style: TextStyle(color: muted),
+                    ),
+                  ),
               ],
             ),
           ),

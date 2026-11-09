@@ -13,6 +13,17 @@ class ApiError implements Exception {
   String toString() => message;
 }
 
+const roles = ['user', 'contributor', 'moderator', 'security', 'admin'];
+
+const roleLabels = {
+  'user': 'User',
+  'contributor': 'Contributor',
+  'moderator': 'Moderator',
+  'security': 'Security',
+  'admin': 'Admin',
+};
+
+/// What each role can do. Mirrors api/src/lumawen_api/auth.py (the API enforces it).
 class User {
   User.fromJson(Map<String, dynamic> j)
     : id = j['id'] as String,
@@ -24,7 +35,59 @@ class User {
   final String? displayName;
   final String role;
   bool get isAdmin => role == 'admin';
+  bool get canWrite => role == 'admin' || role == 'contributor';
+  bool get canManageUsers => const {'admin', 'security', 'moderator'}.contains(role);
+  bool get canSeeActivity => role == 'admin' || role == 'security';
+  bool get isStaff => canWrite || canManageUsers;
 }
+
+/// A user as staff see them in the Users tab.
+class Member extends User {
+  Member.fromJson(super.j)
+    : createdAt = DateTime.parse(j['created_at'] as String).toLocal(),
+      emailVerified = j['email_verified'] as bool,
+      suspendedAt = _date(j['suspended_at']),
+      suspendedReason = j['suspended_reason'] as String?,
+      lastSeenAt = _date(j['last_seen_at']),
+      hasPassword = j['has_password'] as bool,
+      hasGoogle = j['has_google'] as bool,
+      sessions = j['sessions'] as int,
+      super.fromJson();
+  final DateTime createdAt;
+  final bool emailVerified;
+  final DateTime? suspendedAt;
+  final String? suspendedReason;
+  final DateTime? lastSeenAt;
+  final bool hasPassword;
+  final bool hasGoogle;
+  final int sessions;
+}
+
+class MemberPage {
+  MemberPage.fromJson(Map<String, dynamic> j)
+    : total = j['total'] as int,
+      counts = (j['counts'] as Map).cast<String, int>(),
+      users = [for (final u in j['users'] as List) Member.fromJson(u as Map<String, dynamic>)];
+  final int total;
+  final Map<String, int> counts;
+  final List<Member> users;
+}
+
+class Activity {
+  Activity.fromJson(Map<String, dynamic> j)
+    : createdAt = DateTime.parse(j['created_at'] as String).toLocal(),
+      actor = j['actor_email'] as String,
+      action = j['action'] as String,
+      target = j['target'] as String,
+      detail = (j['detail'] as Map).cast<String, dynamic>();
+  final DateTime createdAt;
+  final String actor;
+  final String action;
+  final String target;
+  final Map<String, dynamic> detail;
+}
+
+DateTime? _date(Object? v) => v == null ? null : DateTime.parse(v as String).toLocal();
 
 class Subscriber {
   Subscriber.fromJson(Map<String, dynamic> j)
@@ -62,6 +125,8 @@ class Newsletter {
       pending = (j['delivery'] as Map)['pending'] as int,
       sent = (j['delivery'] as Map)['sent'] as int,
       failed = (j['delivery'] as Map)['failed'] as int,
+      archivedAt = _date(j['archived_at']),
+      deleteAfter = _date(j['delete_after']),
       updatedAt = DateTime.parse(j['updated_at'] as String).toLocal();
   final String id;
   final String subject;
@@ -73,9 +138,9 @@ class Newsletter {
   final int pending;
   final int sent;
   final int failed;
+  final DateTime? archivedAt;
+  final DateTime? deleteAfter;
   final DateTime updatedAt;
-
-  static DateTime? _date(Object? v) => v == null ? null : DateTime.parse(v as String).toLocal();
 }
 
 class Api {
@@ -168,11 +233,44 @@ class Api {
 
   // ---- admin: users and mailing list -------------------------------------------------------
 
-  Future<(int, List<User>)> users({int offset = 0}) async {
-    final r = await _send('GET', 'admin/users', query: {'offset': '$offset'}) as Map;
+  Future<MemberPage> users({String? q, String? role, bool? suspended, int offset = 0}) async =>
+      MemberPage.fromJson(
+        await _send(
+          'GET',
+          'admin/users',
+          query: {
+            if (q != null && q.isNotEmpty) 'q': q,
+            'role': ?role,
+            if (suspended != null) 'suspended': '$suspended',
+            'offset': '$offset',
+          },
+        ) as Map<String, dynamic>,
+      );
+
+  Future<Member> _member(String method, String path, [Object? body]) async =>
+      Member.fromJson(await _send(method, path, body: body) as Map<String, dynamic>);
+
+  Future<Member> setRole(String id, String role) =>
+      _member('PUT', 'admin/users/$id/role', {'role': role});
+
+  Future<Member> suspend(String id, String reason) =>
+      _member('POST', 'admin/users/$id/suspend', {'reason': reason});
+
+  Future<Member> unsuspend(String id) => _member('POST', 'admin/users/$id/unsuspend');
+
+  Future<Member> signOutEverywhere(String id) => _member('POST', 'admin/users/$id/sign-out');
+
+  Future<void> deleteUser(String id) => _send('DELETE', 'admin/users/$id');
+
+  Future<(int, List<Activity>)> activity({String? q, int offset = 0}) async {
+    final r = await _send(
+      'GET',
+      'admin/activity',
+      query: {if (q != null && q.isNotEmpty) 'q': q, 'offset': '$offset'},
+    ) as Map;
     return (
       r['total'] as int,
-      [for (final u in r['users'] as List) User.fromJson(u as Map<String, dynamic>)],
+      [for (final e in r['entries'] as List) Activity.fromJson(e as Map<String, dynamic>)],
     );
   }
 
@@ -191,8 +289,9 @@ class Api {
 
   // ---- admin: newsletters ------------------------------------------------------------------
 
-  Future<List<Newsletter>> newsletters() async {
-    final r = await _send('GET', 'admin/newsletters') as Map;
+  Future<List<Newsletter>> newsletters({bool archived = false}) async {
+    final r =
+        await _send('GET', 'admin/newsletters', query: {if (archived) 'archived': 'true'}) as Map;
     return [
       for (final n in r['newsletters'] as List) Newsletter.fromJson(n as Map<String, dynamic>),
     ];
@@ -218,4 +317,6 @@ class Api {
   );
 
   Future<Newsletter> cancel(String id) => _newsletter('POST', 'admin/newsletters/$id/cancel');
+
+  Future<Newsletter> restore(String id) => _newsletter('POST', 'admin/newsletters/$id/restore');
 }

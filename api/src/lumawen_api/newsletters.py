@@ -1,9 +1,12 @@
 """Newsletters: write one, send yourself a test, then schedule it or send it to everyone.
 
-Admins only. "Send" means scheduling for now: the send worker picks up due newsletters, copies
-each into the outbox once per subscriber (with their own unsubscribe link and the
-List-Unsubscribe headers mail apps use for their unsubscribe button), then delivers them at
-LUMAWEN_MAIL_PER_SECOND. Run it with: lumawen-admin send-emails --loop
+Contributors write and test drafts; only admins schedule, send, or delete what's scheduled or
+sent. Deleting a sent newsletter archives it, and the worker deletes it 30 days later.
+
+"Send" means scheduling for now: the send worker picks up due newsletters, copies each into the
+outbox once per subscriber (with their own unsubscribe link and the List-Unsubscribe headers
+mail apps use for their unsubscribe button), then delivers them at LUMAWEN_MAIL_PER_SECOND.
+Run it with: lumawen-admin send-emails --loop
 """
 
 import logging
@@ -15,11 +18,12 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import AfterValidator, BaseModel, Field
-from sqlalchemy import func, literal, select
+from sqlalchemy import delete, func, literal, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from .auth import DB, AdminUser, Email, normalize_email
+from .audit import record
+from .auth import DB, AdminUser, Email, WriterUser, normalize_email
 from .config import get_settings
 from .models import Newsletter, OutboxEmail, Subscriber
 
@@ -27,6 +31,7 @@ log = logging.getLogger("lumawen.newsletters")
 router = APIRouter(prefix="/admin/newsletters", tags=["admin"])
 
 TESTS_PER_HOUR = 20
+ARCHIVE_DAYS = 30
 FOOTER = (
     "\n\n--\n"
     "You're getting this because you signed up for Lumawen updates at lumawen.com.\n"
@@ -62,7 +67,7 @@ class ScheduleIn(BaseModel):
 
 
 class TestIn(BaseModel):
-    to: Email | None = None  # None = the signed-in admin
+    to: Email | None = None  # None = you (contributors can only send tests to themselves)
 
 
 class Delivery(BaseModel):
@@ -83,6 +88,8 @@ class NewsletterOut(BaseModel):
     queued_at: datetime | None
     recipients: int | None
     delivery: Delivery
+    archived_at: datetime | None
+    delete_after: datetime | None  # archived: when the worker deletes it for good
     created_at: datetime
     updated_at: datetime
 
@@ -124,6 +131,8 @@ def _out(n: Newsletter, delivery: Delivery) -> NewsletterOut:
         queued_at=n.queued_at,
         recipients=n.recipients,
         delivery=delivery,
+        archived_at=n.archived_at,
+        delete_after=n.archived_at + timedelta(days=ARCHIVE_DAYS) if n.archived_at else None,
         created_at=n.created_at,
         updated_at=n.updated_at,
     )
@@ -142,6 +151,22 @@ def _get(db: Session, newsletter_id: uuid.UUID, lock: bool = False) -> Newslette
 def _not_sent(n: Newsletter) -> None:
     if n.status == "sent":
         raise HTTPException(409, "This newsletter was already sent.")
+
+
+def _writable(n: Newsletter, user) -> None:
+    """Admins can edit until it's sent; contributors only drafts."""
+    _not_sent(n)
+    if n.status != "draft" and user.role != "admin":
+        raise HTTPException(403, "Only an admin can change a scheduled newsletter.")
+
+
+def purge_archived(db: Session) -> int:
+    """Delete newsletters archived more than ARCHIVE_DAYS ago (the worker runs this hourly)."""
+    result = db.execute(
+        delete(Newsletter).where(Newsletter.archived_at < _now() - timedelta(days=ARCHIVE_DAYS))
+    )
+    db.commit()
+    return result.rowcount
 
 
 # ---- the send worker's part ------------------------------------------------------------------
@@ -204,14 +229,18 @@ def queue_due_newsletters(db: Session) -> int:
 
 @router.get("", response_model=NewsletterPage)
 def list_newsletters(
-    _: AdminUser,
+    _: WriterUser,
     db: DB,
+    archived: bool = False,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> NewsletterPage:
-    total = db.scalar(select(func.count()).select_from(Newsletter))
+    """Newest first. archived=true lists the deleted sent ones (kept 30 days)."""
+    where = Newsletter.archived_at.is_not(None) if archived else Newsletter.archived_at.is_(None)
+    total = db.scalar(select(func.count()).select_from(Newsletter).where(where))
     rows = db.scalars(
         select(Newsletter)
+        .where(where)
         .order_by(Newsletter.created_at.desc(), Newsletter.id)
         .limit(limit)
         .offset(offset)
@@ -221,8 +250,8 @@ def list_newsletters(
 
 
 @router.post("", status_code=201, response_model=NewsletterOut)
-def create_newsletter(body: NewsletterIn, admin: AdminUser, db: DB) -> NewsletterOut:
-    n = Newsletter(subject=body.subject, body_text=body.body_text, created_by=admin.id)
+def create_newsletter(body: NewsletterIn, writer: WriterUser, db: DB) -> NewsletterOut:
+    n = Newsletter(subject=body.subject, body_text=body.body_text, created_by=writer.id)
     db.add(n)
     db.commit()
     db.refresh(n)
@@ -230,17 +259,17 @@ def create_newsletter(body: NewsletterIn, admin: AdminUser, db: DB) -> Newslette
 
 
 @router.get("/{newsletter_id}", response_model=NewsletterOut)
-def get_newsletter(newsletter_id: uuid.UUID, _: AdminUser, db: DB) -> NewsletterOut:
+def get_newsletter(newsletter_id: uuid.UUID, _: WriterUser, db: DB) -> NewsletterOut:
     n = _get(db, newsletter_id)
     return _out(n, _deliveries(db, [n.id])[n.id])
 
 
 @router.patch("/{newsletter_id}", response_model=NewsletterOut)
 def edit_newsletter(
-    newsletter_id: uuid.UUID, body: NewsletterPatch, _: AdminUser, db: DB
+    newsletter_id: uuid.UUID, body: NewsletterPatch, writer: WriterUser, db: DB
 ) -> NewsletterOut:
     n = _get(db, newsletter_id, lock=True)
-    _not_sent(n)
+    _writable(n, writer)
     if body.subject is not None:
         n.subject = body.subject
     if body.body_text is not None:
@@ -251,19 +280,42 @@ def edit_newsletter(
 
 
 @router.delete("/{newsletter_id}", status_code=204)
-def delete_newsletter(newsletter_id: uuid.UUID, _: AdminUser, db: DB) -> Response:
+def delete_newsletter(newsletter_id: uuid.UUID, writer: WriterUser, db: DB) -> Response:
+    """A draft is deleted; a scheduled one is cancelled and deleted; a sent one is archived
+    (hidden, restorable) and deleted for good after ARCHIVE_DAYS."""
     n = _get(db, newsletter_id, lock=True)
-    _not_sent(n)
-    db.delete(n)
+    if n.status != "draft" and writer.role != "admin":
+        raise HTTPException(403, "Only an admin can delete a scheduled or sent newsletter.")
+    if n.status == "sent":
+        if n.archived_at is None:
+            n.archived_at = _now()
+            record(db, writer, "newsletter.archive", n.subject)
+    else:
+        record(db, writer, f"newsletter.delete_{n.status}", n.subject)
+        db.delete(n)
     db.commit()
     return Response(status_code=204)
 
 
+@router.post("/{newsletter_id}/restore", response_model=NewsletterOut)
+def restore(newsletter_id: uuid.UUID, admin: AdminUser, db: DB) -> NewsletterOut:
+    """Bring an archived newsletter back before it's deleted for good."""
+    n = _get(db, newsletter_id, lock=True)
+    if n.archived_at is not None:
+        n.archived_at = None
+        record(db, admin, "newsletter.restore", n.subject)
+    db.commit()
+    db.refresh(n)
+    return _out(n, _deliveries(db, [n.id])[n.id])
+
+
 @router.post("/{newsletter_id}/test", response_model=NewsletterOut)
-def send_test(newsletter_id: uuid.UUID, body: TestIn, admin: AdminUser, db: DB) -> NewsletterOut:
-    """Send one copy, marked [Test], to the admin (or another address) right away."""
+def send_test(newsletter_id: uuid.UUID, body: TestIn, writer: WriterUser, db: DB) -> NewsletterOut:
+    """Send one copy, marked [Test], to you (admins: or another address) right away."""
     n = _get(db, newsletter_id)
-    to = normalize_email(body.to) if body.to else admin.email
+    to = normalize_email(body.to) if body.to else writer.email
+    if to != writer.email and writer.role != "admin":
+        raise HTTPException(403, "Contributors can only send tests to themselves.")
     recent = db.scalar(
         select(func.count())
         .select_from(OutboxEmail)
@@ -287,7 +339,7 @@ def send_test(newsletter_id: uuid.UUID, body: TestIn, admin: AdminUser, db: DB) 
 
 
 @router.post("/{newsletter_id}/schedule", response_model=NewsletterOut)
-def schedule(newsletter_id: uuid.UUID, body: ScheduleIn, _: AdminUser, db: DB) -> NewsletterOut:
+def schedule(newsletter_id: uuid.UUID, body: ScheduleIn, admin: AdminUser, db: DB) -> NewsletterOut:
     """Send to everyone subscribed at send_at (or now). Can be cancelled until then."""
     n = _get(db, newsletter_id, lock=True)
     _not_sent(n)
@@ -298,16 +350,19 @@ def schedule(newsletter_id: uuid.UUID, body: ScheduleIn, _: AdminUser, db: DB) -
         raise HTTPException(422, "send_at must be within a year.")
     n.status = "scheduled"
     n.send_at = send_at
+    record(db, admin, "newsletter.schedule", n.subject, send_at=send_at.isoformat())
     db.commit()
     db.refresh(n)
     return _out(n, Delivery())
 
 
 @router.post("/{newsletter_id}/cancel", response_model=NewsletterOut)
-def cancel(newsletter_id: uuid.UUID, _: AdminUser, db: DB) -> NewsletterOut:
+def cancel(newsletter_id: uuid.UUID, admin: AdminUser, db: DB) -> NewsletterOut:
     """Back to draft. Only before the worker has picked it up."""
     n = _get(db, newsletter_id, lock=True)
     _not_sent(n)
+    if n.status == "scheduled":
+        record(db, admin, "newsletter.cancel", n.subject)
     n.status = "draft"
     n.send_at = None
     db.commit()

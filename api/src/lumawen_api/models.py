@@ -23,7 +23,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
-ROLES = ("user", "admin")
+# Who can do what: see permissions.py.
+ROLES = ("user", "contributor", "moderator", "security", "admin")
 
 
 class AppSetting(Base):
@@ -42,7 +43,10 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint("email = lower(email)", name="users_email_lowercase"),
-        CheckConstraint("role IN ('user', 'admin')", name="users_role_valid"),
+        CheckConstraint(
+            "role IN ('user', 'contributor', 'moderator', 'security', 'admin')",
+            name="users_role_valid",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -52,6 +56,9 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(80))
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # A suspended user can't sign in; suspending also ends their sessions.
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suspended_reason: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -244,6 +251,8 @@ class Newsletter(Base):
     send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     recipients: Mapped[int | None] = mapped_column(Integer)
+    # Deleting a sent newsletter archives it; the worker deletes it 30 days later.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -252,4 +261,25 @@ class Newsletter(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class AuditEntry(Base):
+    """One staff action: who did what to whom. Kept so admins and security can review."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("audit_log_created", "created_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    actor_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    target: Mapped[str] = mapped_column(String(400), nullable=False)  # e.g. an email or subject
+    detail: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

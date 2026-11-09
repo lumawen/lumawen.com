@@ -612,6 +612,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "argon2-cffi" },
+    { name = "dnspython" },
     { name = "email-validator" },
     { name = "fastapi" },
     { name = "google-auth" },
@@ -633,6 +634,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.16" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
+    { name = "dnspython", specifier = ">=2.6" },
     { name = "email-validator", specifier = ">=2.3.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-auth", specifier = ">=2.30" },

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import get_session
 from .mail import queue_email, recent_count
+from .maildomain import CANT_RECEIVE, accepts_mail
 from .models import AuthSession, EmailToken, LoginThrottle, User, UserIdentity
 from .security import hash_password, hash_token, needs_rehash, new_token, verify_password
 
@@ -493,6 +494,8 @@ def register(body: RegisterIn, request: Request, db: DB) -> Status:
             status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-ups from here. Try again later."
         )
     email = normalize_email(body.email)
+    if not accepts_mail(email):
+        raise HTTPException(422, CANT_RECEIVE)
     pending = hash_password(body.password)
     db.execute(
         pg_insert(User)

@@ -403,7 +403,9 @@
         form.reset();
       } else if (r.status === 422) {
         note.className = "signup-note";
-        note.textContent = "Please enter a valid email address.";
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          note.textContent = typeof j.detail === "string" ? j.detail : "Please enter a valid email address.";
+        });
       } else {
         throw new Error(r.status);
       }

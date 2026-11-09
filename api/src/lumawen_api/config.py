@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     max_failed_per_email: int = 50
     email_lockout_minutes: int = 60
     emails_per_hour: int = 3  # per address and email kind (confirm, reset, ...)
+    # Refuse sign-ups to domains that can't receive mail (a DNS lookup; off in tests).
+    check_mail_domains: bool = True
 
     # Google sign-in: the OAuth client IDs (web, Android, ...) whose ID tokens we accept,
     # comma-separated, web client first (the dashboard's button uses it). Empty turns it off.

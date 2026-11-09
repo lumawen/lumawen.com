@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .auth import CHECK_EMAIL, DB, Email, Status, _client_ip, _count_attempt, normalize_email
 from .config import get_settings
 from .mail import forget_address, queue_email
+from .maildomain import CANT_RECEIVE, accepts_mail
 from .models import OutboxEmail, Subscriber
 from .security import hash_token, new_token
 
@@ -96,6 +97,8 @@ def subscribe(body: SubscribeIn, request: Request, db: DB) -> Status:
     if not _count_attempt(db, ip_rule):
         return CHECK_EMAIL  # same answer; nothing is sent
     email = normalize_email(body.email)
+    if not accepts_mail(email):
+        raise HTTPException(422, CANT_RECEIVE)
     db.execute(
         pg_insert(Subscriber)
         .values(

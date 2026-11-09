@@ -39,6 +39,7 @@ def database_url() -> Iterator[str]:
     url = make_url(ADMIN_URL).set(database=name).render_as_string(hide_password=False)
     os.environ["LUMAWEN_DATABASE_URL"] = url
     os.environ["LUMAWEN_ENV"] = "test"
+    os.environ["LUMAWEN_CHECK_MAIL_DOMAINS"] = "false"  # no DNS in tests; see test_maildomain
     _reset_caches()
     try:
         command.upgrade(Config(str(API_DIR / "alembic.ini")), "head")

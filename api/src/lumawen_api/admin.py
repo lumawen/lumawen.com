@@ -111,12 +111,16 @@ def _cell(value: object) -> str:
 
 @router.get("/subscribers.csv")
 def export_subscribers(
-    _: AdminUser, db: DB, status: StatusFilter | None = "subscribed"
+    _: AdminUser, db: DB, status: StatusFilter | Literal["all"] = "subscribed"
 ) -> Response:
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["email", "status", "source", "created_at", "confirmed_at", "unsubscribed_at"])
-    for s in db.scalars(_filtered(select(Subscriber), status, None).order_by(Subscriber.email)):
+    for s in db.scalars(
+        _filtered(select(Subscriber), None if status == "all" else status, None).order_by(
+            Subscriber.email
+        )
+    ):
         writer.writerow(
             [
                 _cell(v)

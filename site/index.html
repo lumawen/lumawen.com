@@ -348,12 +348,13 @@
       <p class="eyebrow">Follow along</p>
       <h2>Be there when the first pickup ships.</h2>
       <p class="muted" style="max-width:34em;margin:0 auto">Want to hear when there's something new? Leave your email and we'll keep you posted.</p>
-      <form class="signup" id="signup" action="/api/list/subscribe" method="post" novalidate>
+      <form class="signup" id="signup" novalidate>
         <label class="hp" aria-hidden="true">Leave this empty <input type="text" name="website" tabindex="-1" autocomplete="off"></label>
         <input type="email" name="email" required autocomplete="email" placeholder="you@example.com" aria-label="Email address">
         <button class="btn solid" type="submit">Get updates</button>
       </form>
       <p class="signup-note" id="signup-note" role="status" aria-live="polite">One email to confirm, then only real news. Unsubscribe anytime.</p>
+      <noscript><p class="signup-note">No JavaScript? Email <a href="mailto:hello@lumawen.com?subject=Keep%20me%20posted">hello@lumawen.com</a> and we'll add you.</p></noscript>
       <p class="muted" style="max-width:34em;margin:28px auto 0">Or say hello at <a href="mailto:hello@lumawen.com">hello@lumawen.com</a>, and follow us wherever you hang out.</p>
       <div class="links">
         <a href="https://github.com/lumawen">GitHub</a>

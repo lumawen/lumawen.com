@@ -208,3 +208,38 @@ def test_admin_can_erase_a_subscriber(client):
     assert client.delete(f"/api/admin/subscribers/{sub.id}", headers=origin).status_code == 204
     assert subscriber("erase@example.com") is None
     assert client.delete(f"/api/admin/subscribers/{sub.id}", headers=origin).status_code == 404
+
+
+def test_confirm_emails_have_a_global_hourly_cap(client, monkeypatch):
+    monkeypatch.setattr("lumawen_api.lists.CONFIRMS_PER_HOUR", 2)
+    monkeypatch.setattr("lumawen_api.lists.SIGNUPS_PER_IP_PER_HOUR", 100)
+    for i in range(4):
+        assert subscribe(client, f"cap{i}@example.com").status_code == 202
+    assert len(outbox(kind="list_confirm")) == 2
+    assert subscriber("cap3@example.com").confirm_token_hash is None
+
+
+def test_unconfirmed_signups_are_purged(client, db):
+    from datetime import UTC, datetime, timedelta
+
+    from lumawen_api.lists import purge_unconfirmed
+
+    subscribe(client, "old@example.com")
+    subscribe(client, "new@example.com")
+    subscribed(client, "kept@example.com")
+    for email in ("old@example.com", "kept@example.com"):
+        sub = db.scalar(select(Subscriber).where(Subscriber.email == email))
+        sub.created_at = datetime.now(UTC) - timedelta(days=31)
+    db.commit()
+    assert purge_unconfirmed(db) == 1
+    assert subscriber("old@example.com") is None
+    assert subscriber("new@example.com") is not None
+    assert subscriber("kept@example.com").status == "subscribed"
+
+
+def test_admin_csv_can_export_everyone(client):
+    subscribed(client, "in@example.com")
+    subscribe(client, "pending2@example.com")
+    as_admin(client)
+    rows = list(csv.reader(io.StringIO(client.get("/api/admin/subscribers.csv?status=all").text)))
+    assert [row[0] for row in rows[1:]] == ["in@example.com", "pending2@example.com"]

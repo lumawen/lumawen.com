@@ -154,8 +154,11 @@ class Api {
   Future<void> register(String email, String password) =>
       _send('POST', 'auth/register', body: {'email': email, 'password': password});
 
-  Future<void> confirm(String token, String password) =>
-      _send('POST', 'auth/confirm', body: {'token': token, 'password': password});
+  /// Confirms the email and signs in.
+  Future<User> confirm(String token, String password) async {
+    final r = await _send('POST', 'auth/confirm', body: {'token': token, 'password': password});
+    return User.fromJson((r as Map)['user'] as Map<String, dynamic>);
+  }
 
   Future<void> forgotPassword(String email) =>
       _send('POST', 'auth/forgot-password', body: {'email': email});

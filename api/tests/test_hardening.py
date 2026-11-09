@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
-from helpers import PASSWORD, register, signed_up, web_login
+from helpers import PASSWORD, confirm, register, signed_up, web_login
 from sqlalchemy import select, update
 
 from lumawen_api import config
@@ -85,3 +85,10 @@ def test_known_networks_expire(client, db):
     db.commit()
     purge_throttle(db)
     assert db.scalars(select(KnownSignInPlace)).all() == []
+
+
+def test_a_flood_does_not_block_the_confirm_link(client, app, monkeypatch):
+    monkeypatch.setattr(config.get_settings(), "max_failed_per_email", 3)
+    token = register(client, "fresh@example.com")
+    _flood(app, "fresh@example.com", 3)
+    assert confirm(client, token).status_code == 200

@@ -87,7 +87,8 @@ if [[ $SYSTEMD == 1 ]]; then
   API="$RUN/api"
   # The system Python (the service can't reach uv's copies under your home) and real copies
   # of packages, not links into your cache.
-  export UV_PYTHON_PREFERENCE=only-system UV_LINK_MODE=copy
+  # The service can't write __pycache__, so compile ahead for quick starts.
+  export UV_PYTHON_PREFERENCE=only-system UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 fi
 cd "$API"
 say "Python dependencies"
@@ -104,12 +105,14 @@ touch "$WEB/.deployed-from-repo"
 if [[ $SYSTEMD == 1 ]]; then
   if command -v pm2 >/dev/null && pm2 jlist 2>/dev/null | grep -q "\"name\":\"lumawen-api-$STAGE\""; then
     say "Moving off pm2 (the services take over the port)"
-    pm2 delete "lumawen-api-$STAGE" "lumawen-mail-$STAGE" >/dev/null || true
-    pm2 save --force >/dev/null
+    # The worker first (it may finish an email, up to 35 s) while the API keeps serving.
+    pm2 delete "lumawen-mail-$STAGE" >/dev/null || true
+    pm2 delete "lumawen-api-$STAGE" >/dev/null || true
   fi
   say "Restarting $UNITS"
   # shellcheck disable=SC2086  # two unit names
   sudo -n /usr/bin/systemctl restart $UNITS
+  command -v pm2 >/dev/null && pm2 save --force >/dev/null
   LOGS="sudo journalctl -u lumawen-api-$STAGE -n 50"
 else
   say "Restarting under pm2"

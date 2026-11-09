@@ -570,7 +570,9 @@ def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, BAD_LINK)
     ip = _client_ip(request)
     rules = _throttle_rules(email, ip)
-    if not _count_attempt(db, rules):
+    # The link already proves the inbox, so a stranger's flood on this email doesn't pause it
+    # (this network still has its own 5-tries limit).
+    if not _count_attempt(db, rules, ignore_pause=(rules[1][0],)):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many wrong passwords. Try again later, or sign up again for a new link.",

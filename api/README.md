@@ -32,9 +32,11 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 
 Five wrong passwords from one IP for one email pause that pair for 15 minutes, and 50 from anywhere
 pause the email for an hour (a reset lifts it), except on networks the account signed in
-from in the last 90 days, so a stranger can't lock its owner out. Signing out everywhere forgets
-those networks. Unknown emails are counted the same way, and every
-sign-in does exactly one Argon2 check, so neither answers nor timing reveal who has an account.
+from in the last 90 days, so a stranger can't lock its owner out (confirm links aren't paused
+either). Signing out everywhere forgets those networks. Unknown emails are counted the same
+way, and every sign-in does exactly one Argon2 check, so neither answers nor timing reveal who
+has an account. One known trade-off: while an email is paused, someone on a network its owner
+uses (the same office or campus) can tell from a 401 instead of a 429 that the account exists.
 Each address gets at most 3 emails of a kind an hour. Sign-ups (and mailing-list sign-ups) to a domain that DNS says can't receive mail, like
 example.com or a typo, get `422`; DNS trouble never blocks anyone. Sign-ups are limited to 20 an hour per IP, and
 accounts never confirmed are deleted after 30 days (unless a link is still open). At most

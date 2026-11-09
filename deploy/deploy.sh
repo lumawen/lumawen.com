@@ -20,6 +20,35 @@ if ! command -v pm2 >/dev/null || ! command -v node >/dev/null; then
 fi
 say() { printf '\n==> %s\n' "$*"; }
 
+# Flutter is installed once into ~/flutter-<version> (no sudo; about 2 GB), pinned by
+# app/FLUTTER_VERSION, and builds the dashboard into app/build/web.
+build_dashboard() {
+  local version flutter_home
+  version="$(cat "$DIR/app/FLUTTER_VERSION")"
+  flutter_home="$HOME/flutter-$version"
+  if [[ ! -x "$flutter_home/bin/flutter" ]]; then
+    for tool in git curl unzip xz; do
+      command -v "$tool" >/dev/null || {
+        echo "Flutter needs $tool: sudo apt install git curl unzip xz-utils" >&2
+        exit 1
+      }
+    done
+    echo "Installing Flutter $version into $flutter_home (once, a few minutes)"
+    rm -rf "$flutter_home.tmp"
+    git clone --quiet --depth 1 --branch "$version" https://github.com/flutter/flutter.git \
+      "$flutter_home.tmp"
+    "$flutter_home.tmp/bin/flutter" --disable-analytics >/dev/null
+    mv "$flutter_home.tmp" "$flutter_home"
+  fi
+  (
+    cd "$DIR/app"
+    "$flutter_home/bin/flutter" pub get --enforce-lockfile >/dev/null
+    "$flutter_home/bin/flutter" build web --release --base-href /dashboard/ \
+      --no-web-resources-cdn --no-wasm-dry-run --no-pub >/dev/null
+  )
+  echo "built app/build/web"
+}
+
 cd "$DIR"
 say "Updating code"
 git fetch --quiet origin main
@@ -36,8 +65,11 @@ uv run --no-sync alembic upgrade head
 printf '{"commit": "%s", "built_at": "%s"}\n' "$COMMIT" "$(date -u +%FT%TZ)" > build-info.json
 
 if [[ "$STAGE" == "test" ]]; then
+  say "Dashboard (Flutter web)"
+  build_dashboard
   say "Site files -> $WEB"
-  rsync -a --delete "$DIR/site/" "$WEB/"
+  rsync -a --delete --exclude /dashboard/ "$DIR/site/" "$WEB/"
+  rsync -a --delete "$DIR/app/build/web/" "$WEB/dashboard/"
 fi
 
 say "Restarting under pm2"

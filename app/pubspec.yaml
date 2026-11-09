@@ -1,0 +1,34 @@
+name: lumawen_app
+description: "Lumawen app and dashboard"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_sign_in: ^7.2.0
+  google_sign_in_platform_interface: ^3.1.0
+  google_sign_in_web: ^1.1.3
+  http: ^1.6.0
+  web: ^1.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/img/
+  fonts:
+    - family: Lumawen Sans
+      fonts:
+        - asset: assets/fonts/LumawenSans-Regular.ttf
+        - asset: assets/fonts/LumawenSans-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/LumawenSans-Bold.ttf
+          weight: 700

@@ -1,0 +1,31 @@
+name: app
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/app.yml"]
+  pull_request:
+    paths: ["app/**", ".github/workflows/app.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Flutter (version from app/FLUTTER_VERSION)
+        run: |
+          git clone --quiet --depth 1 --branch "$(cat FLUTTER_VERSION)" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - run: flutter --disable-analytics
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --output=none --set-exit-if-changed -l 100 lib test
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build web --release --base-href /dashboard/ --no-web-resources-cdn --no-wasm-dry-run

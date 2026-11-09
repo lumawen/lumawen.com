@@ -54,3 +54,18 @@ def test_docs_hidden_in_production(monkeypatch, database_url):
     with TestClient(create_app()) as c:
         assert c.get("/api/docs").status_code == 404
         assert c.get("/api/openapi.json").status_code == 404
+
+
+def test_public_config_gives_the_web_google_client_id(client, monkeypatch):
+    from lumawen_api import config
+
+    assert client.get("/api/config").json() == {"google_client_id": None}
+    monkeypatch.setenv("LUMAWEN_GOOGLE_CLIENT_IDS", "web-id.apps.googleusercontent.com, android-id")
+    config.get_settings.cache_clear()
+    try:
+        assert client.get("/api/config").json() == {
+            "google_client_id": "web-id.apps.googleusercontent.com"
+        }
+    finally:
+        monkeypatch.delenv("LUMAWEN_GOOGLE_CLIENT_IDS")
+        config.get_settings.cache_clear()

@@ -7,6 +7,7 @@ LUMAWEN_MAIL_PER_SECOND. Run it with: lumawen-admin send-emails --loop
 """
 
 import logging
+import unicodedata
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -34,12 +35,15 @@ FOOTER = (
 
 
 def _one_line(subject: str) -> str:
-    if any(ord(c) < 32 or ord(c) == 127 for c in subject):
+    subject = subject.strip()
+    if not subject:
+        raise ValueError("The subject can't be empty.")
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in subject):
         raise ValueError("The subject must be one line, without control characters.")
-    return subject.strip()
+    return subject
 
 
-Subject = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_one_line)]
+Subject = Annotated[str, Field(max_length=200), AfterValidator(_one_line)]
 Body = Annotated[str, Field(min_length=1, max_length=100_000)]
 
 
@@ -62,6 +66,9 @@ class TestIn(BaseModel):
 
 
 class Delivery(BaseModel):
+    """Outbox copies by status. Copies are purged 30 days after sending (and dropped when
+    someone unsubscribes first), so for older newsletters `recipients` is the lasting count."""
+
     pending: int = 0
     sent: int = 0
     failed: int = 0

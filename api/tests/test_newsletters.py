@@ -284,3 +284,13 @@ def test_send_due_stops_between_emails_when_asked(client, db):
     assert send_due(db, sender, stop=stop) == 1
     assert len(outbox(kind="list_confirm")) == 3
     assert sum(r.status == "pending" for r in outbox(kind="list_confirm")) == 2
+
+
+def test_subject_rejects_unicode_line_breaks_and_blank(client):
+    as_admin(client)
+    for subject in ("a\x85b", "a b", "a b", "   "):
+        r = client.post(
+            "/api/admin/newsletters", json={"subject": subject, "body_text": "x"}, headers=ORIGIN
+        )
+        assert r.status_code == 422, subject
+    assert draft(client, subject="  Spaced out  ")["subject"] == "Spaced out"

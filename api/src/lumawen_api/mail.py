@@ -200,16 +200,21 @@ def purge_outbox(db: Session) -> int:
 
 
 def forget_address(db: Session, email: str, newsletters_only: bool = False) -> None:
-    """Drop queued newsletters to an address (on unsubscribe), or every email to it (erase)."""
+    """Drop queued newsletters to an address (on unsubscribe), or every list email to it and
+    every copy already sent (erase). Pending account emails (confirm, reset) are kept."""
     query = delete(OutboxEmail).where(OutboxEmail.to_address == email)
+    if not newsletters_only:
+        query = query.where(
+            OutboxEmail.kind.in_(("list_confirm", "newsletter")) | (OutboxEmail.status != "pending")
+        )
     if newsletters_only:
         query = query.where(OutboxEmail.kind == "newsletter", OutboxEmail.status == "pending")
     db.execute(query)
 
 
 def _stop_on_signals() -> threading.Event:
-    """pm2 stops the worker with SIGINT (deploys) or SIGTERM. Finish the batch, then exit,
-    so an email that went out is always marked sent and never goes out twice."""
+    """pm2 stops the worker with SIGINT (deploys) or SIGTERM. Finish the email in flight, then
+    exit, so an email that went out is always marked sent and never goes out twice."""
     stop = threading.Event()
 
     def handler(signum, frame) -> None:

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the latest main to a stage. Run as your normal user (no sudo):
 #   bash ~/lumawen-test/deploy/deploy.sh test
+#   bash ~/lumawen-prod/deploy/deploy.sh prod
 # Pulls main, installs dependencies, migrates the database, publishes the site files,
 # restarts the API and email worker under pm2, and checks /api/health.
 set -euo pipefail
@@ -8,7 +9,8 @@ set -euo pipefail
 STAGE="${1:-}"
 case "$STAGE" in
   test) HOST="test.lumawen.com"; PORT=3041 ;;
-  *) echo "usage: deploy.sh test" >&2; exit 2 ;;
+  prod) HOST="lumawen.com"; PORT=3040 ;;
+  *) echo "usage: deploy.sh test|prod" >&2; exit 2 ;;
 esac
 DIR="$HOME/lumawen-$STAGE"
 WEB="/var/www/$HOST/html"
@@ -58,11 +60,9 @@ COMMIT="$(git rev-parse --short HEAD)"
 echo "main is at $COMMIT"
 
 [[ -f api/.env ]] || { echo "api/.env is missing: run setup-server.sh first." >&2; exit 1; }
-if [[ "$STAGE" == "test" ]]; then
-  # First, before anything on the server changes: the most likely step to fail.
-  say "Dashboard (Flutter web)"
-  build_dashboard
-fi
+# First, before anything on the server changes: the most likely step to fail.
+say "Dashboard (Flutter web)"
+build_dashboard
 
 cd api
 say "Python dependencies"
@@ -71,11 +71,9 @@ say "Database migrations"
 uv run --no-sync alembic upgrade head
 printf '{"commit": "%s", "built_at": "%s"}\n' "$COMMIT" "$(date -u +%FT%TZ)" > build-info.json
 
-if [[ "$STAGE" == "test" ]]; then
-  say "Site files -> $WEB"
-  rsync -a --delete --exclude /dashboard/ "$DIR/site/" "$WEB/"
-  rsync -a --delete "$DIR/app/build/web/" "$WEB/dashboard/"
-fi
+say "Site files -> $WEB"
+rsync -a --delete --exclude /dashboard/ "$DIR/site/" "$WEB/"
+rsync -a --delete "$DIR/app/build/web/" "$WEB/dashboard/"
 
 say "Restarting under pm2"
 pm2 startOrReload "$DIR/deploy/ecosystem.config.cjs" --only "lumawen-api-$STAGE,lumawen-mail-$STAGE"

@@ -143,12 +143,15 @@ def test_throttle_per_email_across_many_ips(client, app, monkeypatch):
     for n in range(4):
         with TestClient(app, client=(f"198.51.100.{n}", 5000)) as c:
             assert web_login(c, "spread@example.com", "wrong password").status_code == 401
-    assert web_login(client, "spread@example.com").status_code == 429
-    # A password reset lifts the per-email pause.
-    client.post("/api/auth/forgot-password", json={"email": "spread@example.com"})
-    token = link_token(outbox("spread@example.com", "reset")[-1])
-    client.post("/api/auth/reset-password", json={"token": token, "password": "new password 1"})
-    assert web_login(client, "spread@example.com", "new password 1").status_code == 200
+    with TestClient(app, client=("192.0.2.77", 5000)) as elsewhere:
+        assert web_login(elsewhere, "spread@example.com").status_code == 429
+        # The owner's own network (where they signed in) isn't paused.
+        assert web_login(client, "spread@example.com").status_code == 200
+        # A password reset lifts the per-email pause everywhere.
+        client.post("/api/auth/forgot-password", json={"email": "spread@example.com"})
+        token = link_token(outbox("spread@example.com", "reset")[-1])
+        client.post("/api/auth/reset-password", json={"token": token, "password": "new pass 1"})
+        assert web_login(elsewhere, "spread@example.com", "new pass 1").status_code == 200
 
 
 def test_unconfirmed_login_hint_needs_the_right_password(client):

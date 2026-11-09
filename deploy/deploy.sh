@@ -3,7 +3,11 @@
 #   bash ~/lumawen-test/deploy/deploy.sh test
 #   bash ~/lumawen-prod/deploy/deploy.sh prod
 # Pulls main, installs dependencies, migrates the database, publishes the site files,
-# restarts the API and email worker under pm2, and checks /api/health.
+# restarts the API and email worker, and checks /api/health.
+#
+# Once setup-server.sh has moved a stage to systemd, the API runs as the "lumawen" system user
+# from a copy of api/ in /srv/lumawen-<stage> (which it can read but not change), restarted
+# with a sudo rule that allows only that restart. Before that, it runs under pm2 as you.
 set -euo pipefail
 
 STAGE="${1:-}"
@@ -14,9 +18,13 @@ case "$STAGE" in
 esac
 DIR="$HOME/lumawen-$STAGE"
 WEB="/var/www/$HOST/html"
+RUN="/srv/lumawen-$STAGE"  # where the API runs from, once moved to systemd
+UNITS="lumawen-api-$STAGE.service lumawen-mail-$STAGE.service"
+SYSTEMD=0
+[[ -f "/etc/systemd/system/lumawen-api-$STAGE.service" && -d "$RUN" ]] && SYSTEMD=1
 # shellcheck source=SCRIPTDIR/pm2-path.sh
 . "$(dirname "$(readlink -f "$0")")/pm2-path.sh"
-if ! command -v pm2 >/dev/null || ! command -v node >/dev/null; then
+if [[ $SYSTEMD == 0 ]] && { ! command -v pm2 >/dev/null || ! command -v node >/dev/null; }; then
   echo "pm2 or node not found. Run: which pm2 node and paste the result into the Lumawen thread." >&2
   exit 1
 fi
@@ -64,7 +72,24 @@ echo "main is at $COMMIT"
 say "Dashboard (Flutter web)"
 build_dashboard
 
-cd api
+API="$DIR/api"
+if [[ $SYSTEMD == 1 ]]; then
+  say "API code -> $RUN/api"
+  # The service may read but never write. Only you and group lumawen can enter $RUN (2750, set
+  # by setup-server.sh), so inside it dirs 755 and files 644, whatever your umask; the .env is
+  # 640 and takes the lumawen group from the setgid folder.
+  umask 022
+  rsync -rlt --chmod=D755,F644 --delete --exclude /.venv/ --exclude /.env \
+    --exclude /build-info.json --exclude __pycache__/ --exclude .pytest_cache/ \
+    --exclude .ruff_cache/ "$DIR/api/" "$RUN/api/"
+  cp "$DIR/api/.env" "$RUN/api/.env"
+  chmod 640 "$RUN/api/.env"
+  API="$RUN/api"
+  # The system Python (the service can't reach uv's copies under your home) and real copies
+  # of packages, not links into your cache.
+  export UV_PYTHON_PREFERENCE=only-system UV_LINK_MODE=copy
+fi
+cd "$API"
 say "Python dependencies"
 uv sync --locked --no-dev --quiet
 say "Database migrations"
@@ -76,9 +101,22 @@ rsync -a --delete --exclude /dashboard/ "$DIR/site/" "$WEB/"
 rsync -a --delete "$DIR/app/build/web/" "$WEB/dashboard/"
 touch "$WEB/.deployed-from-repo"
 
-say "Restarting under pm2"
-pm2 startOrReload "$DIR/deploy/ecosystem.config.cjs" --only "lumawen-api-$STAGE,lumawen-mail-$STAGE"
-pm2 save --force >/dev/null
+if [[ $SYSTEMD == 1 ]]; then
+  if command -v pm2 >/dev/null && pm2 jlist 2>/dev/null | grep -q "\"name\":\"lumawen-api-$STAGE\""; then
+    say "Moving off pm2 (the services take over the port)"
+    pm2 delete "lumawen-api-$STAGE" "lumawen-mail-$STAGE" >/dev/null || true
+    pm2 save --force >/dev/null
+  fi
+  say "Restarting $UNITS"
+  # shellcheck disable=SC2086  # two unit names
+  sudo -n /usr/bin/systemctl restart $UNITS
+  LOGS="sudo journalctl -u lumawen-api-$STAGE -n 50"
+else
+  say "Restarting under pm2"
+  pm2 startOrReload "$DIR/deploy/ecosystem.config.cjs" --only "lumawen-api-$STAGE,lumawen-mail-$STAGE"
+  pm2 save --force >/dev/null
+  LOGS="pm2 logs lumawen-api-$STAGE --lines 50"
+fi
 
 say "Health check"
 for _ in $(seq 1 20); do
@@ -91,5 +129,5 @@ for _ in $(seq 1 20); do
   fi
   sleep 1
 done
-echo "The API did not come up healthy. Logs: pm2 logs lumawen-api-$STAGE --lines 50" >&2
+echo "The API did not come up healthy. Logs: $LOGS" >&2
 exit 1

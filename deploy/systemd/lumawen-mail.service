@@ -1,0 +1,41 @@
+# /etc/systemd/system/lumawen-mail-__STAGE__.service, written by deploy/setup-server.sh.
+# The Lumawen email worker for __STAGE__, as the "lumawen" system user.
+# Logs: sudo journalctl -u lumawen-mail-__STAGE__
+[Unit]
+Description=Lumawen email worker (__STAGE__)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=lumawen
+Group=lumawen
+WorkingDirectory=/srv/lumawen-__STAGE__/api
+ExecStart=/srv/lumawen-__STAGE__/api/.venv/bin/lumawen-admin send-emails --loop
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=always
+RestartSec=5
+# Let an SMTP send (30 s timeout) finish after SIGTERM.
+TimeoutStopSec=35
+# Sandboxing: read-only system, no /home, no new privileges, internet and local sockets only.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

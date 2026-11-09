@@ -31,7 +31,9 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 | `GET /me` | The signed-in user. |
 
 Five wrong passwords from one IP for one email pause that pair for 15 minutes, and 50 from anywhere
-pause the email for an hour (a reset lifts it). Unknown emails are counted the same way, and every
+pause the email for an hour (a reset lifts it), except on networks the account signed in
+from in the last 90 days, so a stranger can't lock its owner out. Signing out everywhere forgets
+those networks. Unknown emails are counted the same way, and every
 sign-in does exactly one Argon2 check, so neither answers nor timing reveal who has an account.
 Each address gets at most 3 emails of a kind an hour. Sign-ups (and mailing-list sign-ups) to a domain that DNS says can't receive mail, like
 example.com or a typo, get `422`; DNS trouble never blocks anyone. Sign-ups are limited to 20 an hour per IP, and
@@ -39,7 +41,7 @@ accounts never confirmed are deleted after 30 days (unless a link is still open)
 4 Argon2 checks run at once. In production the session cookie is `__Host-lumawen_session`. Tokens are stored only as SHA-256 hashes.
 Cookie-authenticated POSTs and web sign-ins from another origin are refused. Behind nginx, run
 uvicorn with `--proxy-headers --forwarded-allow-ips 127.0.0.1` so the visitor's IP is used; nginx
-`limit_req` adds per-IP limits at deploy time.
+`limit_req` adds limits per IPv4 address or IPv6 /64.
 
 Google sign-in accepts only ID tokens issued to our own OAuth client IDs
 (`LUMAWEN_GOOGLE_CLIENT_IDS`) for a Google-verified email. It links to an existing account only
@@ -51,7 +53,7 @@ for that exact address that a Lumawen account exists. Workspace alias domains do
 Emails go into the `email_outbox` table and a worker sends them:
 
 ```bash
-uv run lumawen-admin send-emails --loop                 # under pm2 on the server
+uv run lumawen-admin send-emails --loop                 # a systemd service on the server
 uv run lumawen-admin create-admin admin@lumawen.com     # asks for a password
 ```
 
@@ -115,7 +117,7 @@ When it's due, the send worker copies it into the outbox once per subscribed add
 index makes that happen only once), adding a footer with that person's unsubscribe link and the
 `List-Unsubscribe` + `List-Unsubscribe-Post` headers, so Gmail and others show their own
 unsubscribe button. It then sends at `LUMAWEN_MAIL_PER_SECOND`. Each email is sent and committed on
-its own, and on SIGINT/SIGTERM (pm2 restarts) the worker stops after the email in flight. A
+its own, and on SIGINT/SIGTERM (a restart) the worker stops after the email in flight. A
 newsletter is skipped for anyone who unsubscribed after it was queued. Sent and failed emails
 are deleted after 30 days.
 

@@ -1,0 +1,41 @@
+# /etc/systemd/system/lumawen-api-__STAGE__.service, written by deploy/setup-server.sh.
+# The Lumawen API for __STAGE__, as the "lumawen" system user: no sudo, no login, no home, and
+# read-only access to its own code. Logs: sudo journalctl -u lumawen-api-__STAGE__
+[Unit]
+Description=Lumawen API (__STAGE__)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=lumawen
+Group=lumawen
+WorkingDirectory=/srv/lumawen-__STAGE__/api
+# nginx on the same machine passes the visitor's IP in X-Forwarded-For.
+ExecStart=/srv/lumawen-__STAGE__/api/.venv/bin/uvicorn lumawen_api.main:app --host 127.0.0.1 --port __PORT__ --workers 2 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+# Sandboxing: read-only system, no /home, no new privileges, internet and local sockets only.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

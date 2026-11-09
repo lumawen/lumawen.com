@@ -174,6 +174,19 @@ class LoginThrottle(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class KnownSignInPlace(Base):
+    """A network (IP, or IPv6 /64) a user signed in from. Someone flooding an email with wrong
+    passwords pauses it everywhere except these, so the owner isn't locked out."""
+
+    __tablename__ = "known_sign_in_places"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    ip: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class UserIdentity(Base):
     """A sign-in from another provider (Google) linked to a user."""
 

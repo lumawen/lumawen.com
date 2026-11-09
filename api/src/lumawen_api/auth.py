@@ -21,7 +21,14 @@ from .config import get_settings
 from .db import get_session
 from .mail import queue_email, recent_count
 from .maildomain import CANT_RECEIVE, accepts_mail
-from .models import AuthSession, EmailToken, LoginThrottle, User, UserIdentity
+from .models import (
+    AuthSession,
+    EmailToken,
+    KnownSignInPlace,
+    LoginThrottle,
+    User,
+    UserIdentity,
+)
 from .security import hash_password, hash_token, needs_rehash, new_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -30,6 +37,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # In production the __Host- prefix makes browsers refuse a cookie set by any other subdomain
 # (e.g. test.lumawen.com), so nobody can plant a session on lumawen.com. Needs HTTPS.
 COOKIE_NAME = "lumawen_session"
+KNOWN_PLACE_DAYS = 90  # a network you signed in from stays trusted this long
 SIGNUPS_PER_IP_PER_HOUR = 20  # room for offices and carrier NAT sharing one address
 UNCONFIRMED_DAYS = 30
 
@@ -270,11 +278,14 @@ def _throttle_rules(email: str, ip: str) -> list[tuple[str, int, timedelta]]:
     ]
 
 
-def _count_attempt(db: Session, rules: list[tuple[str, int, timedelta]]) -> bool:
+def _count_attempt(
+    db: Session, rules: list[tuple[str, int, timedelta]], ignore_pause: tuple[str, ...] = ()
+) -> bool:
     """Count a sign-in attempt before checking the password. False means "paused, refuse".
 
     Counting first (with the rows locked) means parallel guesses can't slip past the limit.
-    A successful sign-in takes its attempt back with _attempt_succeeded.
+    A successful sign-in takes its attempt back with _attempt_succeeded. Keys in ignore_pause
+    are still counted, but their pause doesn't refuse this attempt.
     """
     now = _now()
     allowed = True
@@ -286,7 +297,8 @@ def _count_attempt(db: Session, rules: list[tuple[str, int, timedelta]]) -> bool
         )
         row = db.get(LoginThrottle, key, with_for_update=True, populate_existing=True)
         if row.locked_until is not None and row.locked_until > now:
-            allowed = False
+            if key not in ignore_pause:
+                allowed = False
             continue
         if row.window_started_at <= now - window:
             row.failures = 0
@@ -300,7 +312,30 @@ def _count_attempt(db: Session, rules: list[tuple[str, int, timedelta]]) -> bool
     return allowed
 
 
-def _attempt_succeeded(db: Session, rules: list[tuple[str, int, timedelta]]) -> None:
+def _known_place(db: Session, email: str, ip: str) -> bool:
+    """Has this email's account signed in from this network lately?"""
+    return (
+        db.scalar(
+            select(KnownSignInPlace.user_id)
+            .join(User, User.id == KnownSignInPlace.user_id)
+            .where(
+                User.email == email,
+                KnownSignInPlace.ip == ip,
+                KnownSignInPlace.last_at > _now() - timedelta(days=KNOWN_PLACE_DAYS),
+            )
+        )
+        is not None
+    )
+
+
+def _attempt_succeeded(
+    db: Session, rules: list[tuple[str, int, timedelta]], user: User, ip: str
+) -> None:
+    db.execute(
+        pg_insert(KnownSignInPlace)
+        .values(user_id=user.id, ip=ip, last_at=_now())
+        .on_conflict_do_update(index_elements=["user_id", "ip"], set_={"last_at": _now()})
+    )
     ip_key, email_key = rules[0][0], rules[1][0]
     db.execute(delete(LoginThrottle).where(LoginThrottle.key == ip_key))
     db.execute(
@@ -357,8 +392,13 @@ def purge_throttle(db: Session) -> int:
             (LoginThrottle.locked_until.is_(None)) | (LoginThrottle.locked_until < now),
         )
     )
+    places = db.execute(
+        delete(KnownSignInPlace).where(
+            KnownSignInPlace.last_at < now - timedelta(days=KNOWN_PLACE_DAYS)
+        )
+    )
     db.commit()
-    return result.rowcount
+    return result.rowcount + places.rowcount
 
 
 # ---- sessions --------------------------------------------------------------------------------
@@ -409,6 +449,8 @@ def _revoke_all(db: Session, user: User) -> None:
         .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
         .values(revoked_at=_now())
     )
+    # Signing out everywhere (a reset, a suspected break-in) also forgets trusted networks.
+    db.execute(delete(KnownSignInPlace).where(KnownSignInPlace.user_id == user.id))
 
 
 def _live(session: AuthSession | None) -> bool:
@@ -526,7 +568,8 @@ def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB)
     )
     if email is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, BAD_LINK)
-    rules = _throttle_rules(email, _client_ip(request))
+    ip = _client_ip(request)
+    rules = _throttle_rules(email, ip)
     if not _count_attempt(db, rules):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -546,7 +589,7 @@ def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB)
     user.password_hash = token.pending_password_hash
     _expire_tokens(db, user, "verify")
     token.used_at = _now()
-    _attempt_succeeded(db, rules)
+    _attempt_succeeded(db, rules, user, ip)
     return sign_in(db, user, body.client, body.device_name, response)
 
 
@@ -555,8 +598,12 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
     if body.client == "web" and not _same_origin(request):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
     email = normalize_email(body.email)
-    rules = _throttle_rules(email, _client_ip(request))
-    if not _count_attempt(db, rules):
+    ip = _client_ip(request)
+    rules = _throttle_rules(email, ip)
+    # A flood of wrong passwords from elsewhere pauses the email, but not where its owner
+    # has signed in before (that network still has its own 5-tries limit).
+    trusted = (rules[1][0],) if _known_place(db, email, ip) else ()
+    if not _count_attempt(db, rules, ignore_pause=trusted):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many wrong passwords. Try again later or reset your password.",
@@ -574,7 +621,7 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
             status.HTTP_403_FORBIDDEN, "Confirm your email first. Check your inbox for the link."
         )
 
-    _attempt_succeeded(db, rules)
+    _attempt_succeeded(db, rules, user, ip)
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
     return sign_in(db, user, body.client, body.device_name, response)

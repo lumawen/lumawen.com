@@ -4,21 +4,29 @@
 #   sudo bash ~/lumawen-prod/deploy/setup-server.sh prod
 #
 # It creates the Postgres database and user, writes api/.env (asking for the Purelymail app
-# password, hidden), adds the nginx site and its HTTPS certificate, then runs deploy.sh as you. Safe to run again: it never rewrites an existing api/.env, and it puts
-# /etc/nginx back as it was if the new config doesn't pass nginx -t.
+# password, hidden), adds the nginx site and its HTTPS certificate, then runs deploy.sh as you.
+# Safe to run again: it never rewrites an existing api/.env, and it puts /etc/nginx back as it
+# was if the new config doesn't pass nginx -t.
+#
+# The API and email worker run as systemd services under the "lumawen" system user (no sudo,
+# no login, no home), from /srv/lumawen-<stage>, which they can read but not change. A rule in
+# /etc/sudoers.d lets you restart just those two services without a password, so deploys still
+# need no sudo. A stage that ran under pm2 is moved over (a few seconds of downtime).
 #
 # Prod (lumawen.com) replaces the hand-made static-site nginx config with
 # deploy/nginx/prod.conf.template, reusing the existing certificate, and from then on deploy.sh
 # publishes the site from the repo (update-site.sh and site zips are no longer used).
 #
 # UNDO:
-#   pm2 delete lumawen-api-test lumawen-mail-test && pm2 save
+#   sudo systemctl disable --now lumawen-api-test lumawen-mail-test
+#   sudo rm /etc/systemd/system/lumawen-{api,mail}-test.service /etc/sudoers.d/lumawen-test
+#   sudo rm -rf /srv/lumawen-test   (and, once no stage is left: sudo userdel lumawen)
 #   sudo rm /etc/nginx/sites-enabled/test.lumawen.com /etc/nginx/sites-available/test.lumawen.com
 #   sudo nginx -t && sudo systemctl reload nginx
 #   sudo certbot delete --cert-name test.lumawen.com
 #   sudo -u postgres psql -c 'DROP DATABASE lumawen_test' -c 'DROP ROLE lumawen_test'
 #   rm -rf ~/lumawen-test; sudo rm -rf /var/www/test.lumawen.com
-# UNDO prod: pm2 delete lumawen-api-prod lumawen-mail-prod && pm2 save, put back
+# UNDO prod: the same systemd, sudoers and /srv steps with "prod", put back
 #   /etc/nginx/sites-available/lumawen.com from the /etc/nginx.bak-* folder this printed and reload,
 #   then (optional) drop the lumawen_prod database and role as above and rm -rf ~/lumawen-prod.
 set -euo pipefail
@@ -53,12 +61,11 @@ say "Checking tools"
 for tool in git psql nginx certbot openssl rsync curl ss; do
   command -v "$tool" >/dev/null || { echo "Missing: $tool" >&2; exit 1; }
 done
-as_user 'command -v pm2 && command -v node' >/dev/null || {
-  echo "Missing: pm2 or node (for $APP_USER). Check: which pm2 node" >&2
-  exit 1
-}
+HAS_PM2=0
+as_user 'command -v pm2 && command -v node' >/dev/null && HAS_PM2=1
 if ss -ltnH "sport = :$PORT" | grep -q .; then
-  if ! as_user 'pm2 jlist' | grep -q "\"name\":\"lumawen-api-$STAGE\""; then
+  if ! systemctl is-active --quiet "lumawen-api-$STAGE" \
+    && ! { [[ $HAS_PM2 == 1 ]] && as_user 'pm2 jlist' | grep -q "\"name\":\"lumawen-api-$STAGE\""; }; then
     echo "Port $PORT is already used by something else:" >&2
     ss -ltnp "sport = :$PORT" >&2
     exit 1
@@ -123,8 +130,8 @@ else
   trap 'rm -f "$TMP"' EXIT
   chmod 600 "$TMP"
   cat > "$TMP" <<ENV
-# Written by deploy/setup-server.sh. Never commit this file. Edit it, then:
-#   pm2 restart lumawen-api-$STAGE lumawen-mail-$STAGE
+# Written by deploy/setup-server.sh. Never commit this file. Edit it, then deploy again
+# (deploy.sh copies it to /srv/lumawen-$STAGE/api/.env and restarts the services).
 LUMAWEN_ENV=production
 LUMAWEN_DATABASE_URL=postgresql+psycopg://$DB:$DB_PASS@localhost:5432/$DB
 LUMAWEN_PUBLIC_BASE_URL=https://$HOST
@@ -205,6 +212,29 @@ if [[ "$STAGE" == test ]] && ! grep -q "managed by Certbot" "$SITE"; then
     --redirect -d "$HOST"
 fi
 
+say "Services lumawen-api-$STAGE and lumawen-mail-$STAGE (user lumawen)"
+RUN="/srv/lumawen-$STAGE"
+if ! id lumawen >/dev/null 2>&1; then
+  useradd --system --user-group --home-dir /nonexistent --no-create-home \
+    --shell /usr/sbin/nologin lumawen
+fi
+# Yours to write (deploys), the service's to read (group lumawen, setgid so new files join it),
+# nobody else's.
+install -d -m 2750 -o "$APP_USER" -g lumawen "$RUN" "$RUN/api"
+for unit in api mail; do
+  sed -e "s/__STAGE__/$STAGE/g" -e "s/__PORT__/$PORT/g" \
+    "$DIR/deploy/systemd/lumawen-$unit.service" > "/etc/systemd/system/lumawen-$unit-$STAGE.service"
+done
+SUDOERS="/etc/sudoers.d/lumawen-$STAGE"
+printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart lumawen-api-%s.service lumawen-mail-%s.service\n' \
+  "$APP_USER" "$STAGE" "$STAGE" > "$SUDOERS.tmp"
+chmod 440 "$SUDOERS.tmp"
+visudo -cqf "$SUDOERS.tmp" || { rm -f "$SUDOERS.tmp"; echo "Bad sudoers rule" >&2; exit 1; }
+mv -f "$SUDOERS.tmp" "$SUDOERS"
+systemctl daemon-reload
+systemctl enable --quiet "lumawen-api-$STAGE" "lumawen-mail-$STAGE"
+# deploy.sh below takes the stage off pm2 (if it was there) just before starting the services.
+
 say "First deploy"
 as_user "bash '$DIR/deploy/deploy.sh' $STAGE"
 
@@ -212,7 +242,7 @@ cat <<DONE
 
 Done. Next:
   1. Make your admin account:
-       $DIR/api/.venv/bin/lumawen-admin create-admin admin@lumawen.com
+       /srv/lumawen-$STAGE/api/.venv/bin/lumawen-admin create-admin admin@lumawen.com
   2. Check: curl -s https://$HOST/api/health
   3. Record the nginx change: cd ~/cobalt-server && ./sync.sh && git add -A && git commit -m "Add $HOST" && git push
 DONE

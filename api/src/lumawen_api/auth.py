@@ -88,6 +88,8 @@ class EmailIn(BaseModel):
 class ConfirmIn(BaseModel):
     token: str = Field(max_length=200)
     password: str = Field(max_length=256)  # the one chosen at sign-up
+    client: Literal["web", "app"] = "web"
+    device_name: str | None = Field(None, max_length=100)
 
 
 class ResetIn(BaseModel):
@@ -455,8 +457,12 @@ def register(body: RegisterIn, db: DB) -> Status:
     return CHECK_EMAIL
 
 
-@router.post("/confirm", response_model=Status)
-def confirm_email(body: ConfirmIn, db: DB) -> Status:
+@router.post("/confirm", response_model=LoginOut)
+def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB) -> LoginOut:
+    """Confirm the email and sign in: the link proves the address, the password proves the
+    person is the one who signed up, which is everything a sign-in checks."""
+    if body.client == "web" and not _same_origin(request):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
     token, user = _lock_email_token(db, body.token, "verify")
     if user.email_verified_at is not None:
         db.rollback()
@@ -471,8 +477,7 @@ def confirm_email(body: ConfirmIn, db: DB) -> Status:
     user.password_hash = token.pending_password_hash
     _expire_tokens(db, user, "verify")
     token.used_at = _now()
-    db.commit()
-    return Status(status="confirmed")
+    return sign_in(db, user, body.client, body.device_name, response)
 
 
 @router.post("/login", response_model=LoginOut)

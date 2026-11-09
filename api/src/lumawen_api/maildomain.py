@@ -19,12 +19,19 @@ CANT_RECEIVE = "That email address can't receive mail. Check it for typos."
 KNOWN_GOOD = "gmail.com"
 
 log = logging.getLogger("lumawen.maildomain")
-_resolver = caching_resolver(timeout=3)  # answers are cached for their DNS lifetime
+_resolver = None  # made on first use, so a server without resolv.conf still starts
+
+
+def _get_resolver():
+    global _resolver
+    if _resolver is None:
+        _resolver = caching_resolver(timeout=2)  # per query; answers cached for their TTL
+    return _resolver
 
 
 def _dns_works() -> bool:
     try:
-        _resolver.resolve(KNOWN_GOOD, "MX")
+        _get_resolver().resolve(KNOWN_GOOD, "MX")
     except Exception:
         log.warning("DNS can't find %s; not checking email domains", KNOWN_GOOD)
         return False
@@ -36,7 +43,7 @@ def accepts_mail(email: str) -> bool:
         return True
     domain = email.rsplit("@", 1)[-1]
     try:
-        validate_email_deliverability(domain, domain, dns_resolver=_resolver)
+        validate_email_deliverability(domain, domain, dns_resolver=_get_resolver())
     except EmailUndeliverableError as e:
         # No cause: a null MX or "v=spf1 -all". Any other cause is DNS trouble: let it through.
         clear_no = e.__cause__ is None or isinstance(

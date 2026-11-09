@@ -55,6 +55,22 @@ uv run lumawen-admin create-admin admin@lumawen.com     # asks for a password
 
 With `LUMAWEN_MAIL_BACKEND=console` (the default) the worker only logs emails.
 
+## Mailing list
+
+"Lumawen updates", with double opt-in. The site's "Get updates" form posts here.
+
+| Route | What it does |
+| --- | --- |
+| `POST /list/subscribe` | `{email}`. Always answers `202 check_email` and emails a confirm link (7 days), unless the address is already subscribed. At most 10 sign-ups an hour per IP. A filled-in `website` field (a hidden honeypot) is dropped. |
+| `GET`/`POST /list/confirm?token=` | `GET` shows a page with a button; only the button's `POST` subscribes, so mail scanners that open links can't. |
+| `GET`/`POST /list/unsubscribe?token=` | The same, and `POST` also takes one-click unsubscribe from mail apps (RFC 8058). |
+| `GET /admin/subscribers` | Admins: paged list with counts, `status=` filter and `q=` email search. |
+| `GET /admin/subscribers.csv` | Admins: CSV export (subscribed only by default; `status=` for others). |
+| `DELETE /admin/subscribers/{id}` | Admins: erase someone completely (privacy request). |
+
+Confirm tokens are stored as hashes. Each subscriber's unsubscribe token is stored as-is so every
+newsletter can print it (`lists.unsubscribe_url`); it can only unsubscribe.
+
 ## Tests
 
 Tests create and drop their own Postgres database. Point them at a server where you may create

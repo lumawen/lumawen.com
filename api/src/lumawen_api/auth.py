@@ -463,6 +463,21 @@ def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB)
     person is the one who signed up, which is everything a sign-in checks."""
     if body.client == "web" and not _same_origin(request):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request blocked.")
+    # Password guesses here count toward the same limits as sign-in, since a right one now
+    # signs in. Counted before any row is locked (counting commits).
+    email = db.scalar(
+        select(User.email)
+        .join(EmailToken, EmailToken.user_id == User.id)
+        .where(EmailToken.token_hash == hash_token(body.token), EmailToken.purpose == "verify")
+    )
+    if email is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, BAD_LINK)
+    rules = _throttle_rules(email, _client_ip(request))
+    if not _count_attempt(db, rules):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many wrong passwords. Try again later, or sign up again for a new link.",
+        )
     token, user = _lock_email_token(db, body.token, "verify")
     if user.email_verified_at is not None:
         db.rollback()
@@ -477,6 +492,7 @@ def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB)
     user.password_hash = token.pending_password_hash
     _expire_tokens(db, user, "verify")
     token.used_at = _now()
+    _attempt_succeeded(db, rules)
     return sign_in(db, user, body.client, body.device_name, response)
 
 

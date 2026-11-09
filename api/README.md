@@ -22,7 +22,7 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 | Route | What it does |
 | --- | --- |
 | `POST /auth/register` | Sends a confirm link. Always answers `202 check_email`, so it never reveals who has an account. Signing up again sends a new link. |
-| `POST /auth/confirm` | Needs the link's token **and** the password chosen at that sign-up, so nobody can claim your address with their own password. |
+| `POST /auth/confirm` | Needs the link's token **and** the password chosen at that sign-up, so nobody can claim your address with their own password. Then signs you in, like `/auth/login` (same `client` choice and wrong-password limits). |
 | `POST /auth/login` | `client: "web"` sets an HttpOnly cookie; `client: "app"` returns an access token (15 min) and a refresh token (30 days). |
 | `POST /auth/refresh` | App only. Rotates both tokens. Re-using the previous token within 30 s gets `409` (a retry or race); later, it ends the session. |
 | `POST /auth/logout`, `/auth/logout-all` | Ends this session, or every session. |

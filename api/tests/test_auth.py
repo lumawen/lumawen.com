@@ -452,3 +452,11 @@ def test_confirm_signs_in_the_app_and_blocks_cross_site_web(client):
     assert r.json()["access_token"] and r.json()["refresh_token"]
     me = client.get("/api/me", headers={"authorization": f"Bearer {r.json()['access_token']}"})
     assert me.json()["email"] == "phone@example.com"
+
+
+def test_confirm_password_guesses_are_limited(client):
+    token = register(client, "guessme@example.com")
+    codes = [confirm(client, token, f"wrong guess {n}").status_code for n in range(12)]
+    assert codes[0] == 400
+    assert 429 in codes
+    assert confirm(client, token).status_code == 429  # paused even for the right password

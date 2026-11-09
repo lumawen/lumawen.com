@@ -7,32 +7,29 @@ Lock order, to avoid deadlocks: users row first, then email_tokens / auth_sessio
 """
 
 import ipaddress
-import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import AfterValidator, BaseModel, EmailStr, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_session
 from .mail import queue_email, recent_count
-from .models import AuthSession, EmailToken, LoginThrottle, OutboxEmail, User, UserIdentity
+from .models import AuthSession, EmailToken, LoginThrottle, User, UserIdentity
 from .security import hash_password, hash_token, needs_rehash, new_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-log = logging.getLogger("lumawen.auth")
 
 # In production the __Host- prefix makes browsers refuse a cookie set by any other subdomain
 # (e.g. test.lumawen.com), so nobody can plant a session on lumawen.com. Needs HTTPS.
 COOKIE_NAME = "lumawen_session"
-SIGNUPS_PER_IP_PER_HOUR = 10
-CONFIRMS_PER_HOUR = 300  # account confirm emails, all addresses together
+SIGNUPS_PER_IP_PER_HOUR = 20  # room for offices and carrier NAT sharing one address
 UNCONFIRMED_DAYS = 30
 
 
@@ -175,9 +172,6 @@ def _send_confirm(db: Session, user: User, pending_password_hash: str) -> None:
     # link (proves the inbox) and that password (proves who signed up), so a stranger who
     # signs up with your address first can never end up owning the account.
     if recent_count(db, user.email, "confirm") >= get_settings().emails_per_hour:
-        return
-    if _emails_last_hour(db, "confirm") >= CONFIRMS_PER_HOUR:
-        log.warning("hourly cap of %s account confirm emails reached", CONFIRMS_PER_HOUR)
         return
     raw = _issue_email_token(
         db, user, "verify", timedelta(hours=VERIFY_HOURS), pending_password_hash
@@ -327,21 +321,14 @@ def _clear_throttle_for(db: Session, email: str) -> None:
     )
 
 
-def _emails_last_hour(db: Session, kind: str) -> int:
-    return db.scalar(
-        select(func.count())
-        .select_from(OutboxEmail)
-        .where(OutboxEmail.kind == kind, OutboxEmail.created_at > _now() - timedelta(hours=1))
-    )
-
-
 def purge_unconfirmed_accounts(db: Session) -> int:
-    """Delete sign-ups never confirmed after UNCONFIRMED_DAYS (called by the send worker)."""
+    """Delete sign-ups never confirmed after UNCONFIRMED_DAYS (called by the send worker).
+    One with a confirm or reset link still open is kept until the link runs out."""
     live_link = (
         select(EmailToken.id)
         .where(
             EmailToken.user_id == User.id,
-            EmailToken.purpose == "verify",
+            EmailToken.purpose.in_(("verify", "reset")),
             EmailToken.used_at.is_(None),
             EmailToken.expires_at > _now(),
         )

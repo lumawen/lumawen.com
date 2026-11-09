@@ -185,6 +185,9 @@ if [[ "$STAGE" == prod ]]; then
 elif [[ ! -f "$SITE" ]] || ! grep -q "managed by Certbot" "$SITE"; then
   sed -e "s/__HOST__/$HOST/g" -e "s/__PORT__/$PORT/g" -e "s/__STAGE__/$STAGE/g" \
     "$SRC/$TEMPLATE" > "$SITE"
+elif ! grep -q "lumawen-headers.conf" "$SITE"; then
+  # Certbot has edited this file, so keep it and add the security headers to each server block.
+  sed -i '/add_header X-Robots-Tag/a\    include /etc/nginx/snippets/lumawen-headers.conf;' "$SITE"
 fi
 ln -sf "$SITE" "/etc/nginx/sites-enabled/$HOST"
 if ! nginx -t; then

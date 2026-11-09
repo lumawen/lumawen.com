@@ -44,7 +44,10 @@ class _UsersTabState extends State<UsersTab> with AutomaticKeepAliveClientMixin 
     super.dispose();
   }
 
+  int _request = 0; // only the newest search's answer is shown
+
   Future<void> _load({bool more = false}) async {
+    final request = ++_request;
     setState(() => _loading = true);
     try {
       final page = await widget.api.users(
@@ -53,7 +56,7 @@ class _UsersTabState extends State<UsersTab> with AutomaticKeepAliveClientMixin 
         suspended: _filter == 'suspended' ? true : null,
         offset: more ? _users.length : 0,
       );
-      if (!mounted) return;
+      if (!mounted || request != _request) return;
       setState(() {
         _page = page;
         if (!more) _users.clear();
@@ -203,6 +206,7 @@ class _MemberSheetState extends State<MemberSheet> {
 
   late Member _m = widget.member;
   bool _busy = false;
+  int _rev = 0; // rebuilds the role dropdown after a failed change
 
   bool get _self => _m.id == widget.me.id;
 
@@ -218,7 +222,10 @@ class _MemberSheetState extends State<MemberSheet> {
         setState(() => _m = m);
       }
     } catch (e) {
-      if (mounted) showError(context, e);
+      if (mounted) {
+        setState(() => _rev++);
+        showError(context, e);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -282,7 +289,7 @@ class _MemberSheetState extends State<MemberSheet> {
     final m = _m;
     final muted = Colors.white.withValues(alpha: .66);
     final canSuspend = !_self && (_canSuspend[me.role]?.contains(m.role) ?? false);
-    final canSignOut = me.canSeeActivity && (m.role != 'admin' || me.isAdmin);
+    final canSignOut = !_self && me.canSeeActivity && (m.role != 'admin' || me.isAdmin);
     String? when(DateTime? d) => d == null ? null : shortDate(d);
     final facts = <(String, String?)>[
       ('Joined', when(m.createdAt)),
@@ -327,6 +334,7 @@ class _MemberSheetState extends State<MemberSheet> {
               const SizedBox(height: 12),
               if (me.isAdmin && !_self)
                 DropdownButtonFormField<String>(
+                  key: ValueKey('${m.role}-$_rev'),
                   initialValue: m.role,
                   decoration: const InputDecoration(labelText: 'Role'),
                   items: [
@@ -382,7 +390,9 @@ class _MemberSheetState extends State<MemberSheet> {
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text(
-                    'This is you. Another admin can change your role.',
+                    me.isAdmin
+                        ? 'This is you. Another admin can change your role.'
+                        : 'This is you.',
                     style: TextStyle(color: muted),
                   ),
                 ),

@@ -22,6 +22,7 @@ def upgrade() -> None:
     op.create_check_constraint("users_role_valid", "users", f"role IN {ROLES}")
     op.add_column("users", sa.Column("suspended_at", sa.DateTime(timezone=True)))
     op.add_column("users", sa.Column("suspended_reason", sa.String(200)))
+    op.add_column("users", sa.Column("suspended_by_role", sa.String(20)))
     op.add_column("newsletters", sa.Column("archived_at", sa.DateTime(timezone=True)))
     op.create_table(
         "audit_log",
@@ -39,9 +40,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Note: this lifts every suspension and turns contributors, moderators and security into
+    # plain users, since the old schema has no place for them.
     op.drop_index("audit_log_created", table_name="audit_log")
     op.drop_table("audit_log")
     op.drop_column("newsletters", "archived_at")
+    op.drop_column("users", "suspended_by_role")
     op.drop_column("users", "suspended_reason")
     op.drop_column("users", "suspended_at")
     op.execute("UPDATE users SET role = 'user' WHERE role NOT IN ('user', 'admin')")

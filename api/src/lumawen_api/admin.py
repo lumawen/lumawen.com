@@ -11,7 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 
-from .audit import record
+from .audit import erase_from_log, record
 from .auth import DB, AdminUser
 from .mail import forget_address
 from .models import Subscriber
@@ -94,7 +94,7 @@ def _cell(value: object) -> str:
 
 @router.get("/subscribers.csv")
 def export_subscribers(
-    _: AdminUser, db: DB, status: StatusFilter | Literal["all"] = "subscribed"
+    admin: AdminUser, db: DB, status: StatusFilter | Literal["all"] = "subscribed"
 ) -> Response:
     out = io.StringIO()
     writer = csv.writer(out)
@@ -117,6 +117,8 @@ def export_subscribers(
                 )
             ]
         )
+    record(db, admin, "subscribers.export", f"status={status}")
+    db.commit()
     return Response(
         out.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -136,6 +138,7 @@ def delete_subscriber(subscriber_id: uuid.UUID, admin: AdminUser, db: DB) -> Res
     if email is None:
         raise HTTPException(404, "No such subscriber.")
     forget_address(db, email)
-    record(db, admin, "subscriber.erase", email)
+    erase_from_log(db, email)
+    record(db, admin, "subscriber.erase", "(erased subscriber)")
     db.commit()
     return Response(status_code=204)

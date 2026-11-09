@@ -64,6 +64,9 @@ class NewsletterPatch(BaseModel):
 
 class ScheduleIn(BaseModel):
     send_at: datetime | None = None  # None = now
+    # The updated_at the admin last saw: refuse if someone edited it since (so you never
+    # send words you haven't read).
+    seen_version: datetime | None = None
 
 
 class TestIn(BaseModel):
@@ -270,6 +273,8 @@ def edit_newsletter(
 ) -> NewsletterOut:
     n = _get(db, newsletter_id, lock=True)
     _writable(n, writer)
+    if n.status == "scheduled":
+        record(db, writer, "newsletter.edit_scheduled", n.subject)
     if body.subject is not None:
         n.subject = body.subject
     if body.body_text is not None:
@@ -314,8 +319,10 @@ def send_test(newsletter_id: uuid.UUID, body: TestIn, writer: WriterUser, db: DB
     """Send one copy, marked [Test], to you (admins: or another address) right away."""
     n = _get(db, newsletter_id)
     to = normalize_email(body.to) if body.to else writer.email
-    if to != writer.email and writer.role != "admin":
-        raise HTTPException(403, "Contributors can only send tests to themselves.")
+    if to != writer.email:
+        if writer.role != "admin":
+            raise HTTPException(403, "Contributors can only send tests to themselves.")
+        record(db, writer, "newsletter.test_to", n.subject, to=to)
     recent = db.scalar(
         select(func.count())
         .select_from(OutboxEmail)
@@ -324,7 +331,18 @@ def send_test(newsletter_id: uuid.UUID, body: TestIn, writer: WriterUser, db: DB
             OutboxEmail.created_at > _now() - timedelta(hours=1),
         )
     )
-    if recent >= TESTS_PER_HOUR:
+    if recent >= TESTS_PER_HOUR * 3:  # all writers together
+        raise HTTPException(429, "Too many test emails this hour. Try again later.")
+    mine = db.scalar(
+        select(func.count())
+        .select_from(OutboxEmail)
+        .where(
+            OutboxEmail.kind == "newsletter_test",
+            OutboxEmail.to_address == to,
+            OutboxEmail.created_at > _now() - timedelta(hours=1),
+        )
+    )
+    if mine >= TESTS_PER_HOUR:
         raise HTTPException(429, f"At most {TESTS_PER_HOUR} test emails an hour.")
     db.add(
         OutboxEmail(
@@ -343,6 +361,8 @@ def schedule(newsletter_id: uuid.UUID, body: ScheduleIn, admin: AdminUser, db: D
     """Send to everyone subscribed at send_at (or now). Can be cancelled until then."""
     n = _get(db, newsletter_id, lock=True)
     _not_sent(n)
+    if body.seen_version is not None and body.seen_version != n.updated_at:
+        raise HTTPException(409, "Someone changed this newsletter since you opened it. Reload it.")
     send_at = body.send_at or _now()
     if send_at.tzinfo is None:
         raise HTTPException(422, "send_at needs a time zone, e.g. 2026-11-20T18:00:00-06:00.")

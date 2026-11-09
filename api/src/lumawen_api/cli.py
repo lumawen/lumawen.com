@@ -27,6 +27,9 @@ def create_admin(email: str, password: str | None) -> str:
             user = User(email=email)
             db.add(user)
         user.role = "admin"
+        user.suspended_at = None  # the way back in if every admin was suspended
+        user.suspended_reason = None
+        user.suspended_by_role = None
         db.flush()
         # Confirm links from earlier sign-ups must not work once the account is confirmed.
         db.execute(

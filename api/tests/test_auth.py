@@ -24,7 +24,11 @@ def test_register_confirm_login_me_logout(client):
     assert "/dashboard/#/confirm?token=" in email.body_text
 
     r = confirm(client, token)
-    assert r.json() == {"status": "confirmed"}
+    assert r.status_code == 200
+    assert r.json()["user"]["email"] == "player@example.com"
+    assert client.get("/api/me").json()["email"] == "player@example.com"  # signed in already
+    client.post("/api/auth/logout")
+    assert client.get("/api/me").status_code == 401
 
     r = web_login(client, "player@example.com")
     assert r.status_code == 200
@@ -430,3 +434,21 @@ def test_old_throttle_rows_are_purged(client, db):
     )
     db.commit()
     assert purge_throttle(db) == 2
+
+
+def test_confirm_signs_in_the_app_and_blocks_cross_site_web(client):
+    token = register(client, "phone@example.com")
+    r = client.post(
+        "/api/auth/confirm",
+        json={"token": token, "password": PASSWORD},
+        headers={"origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+    r = client.post(
+        "/api/auth/confirm",
+        json={"token": token, "password": PASSWORD, "client": "app", "device_name": "Pixel"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["access_token"] and r.json()["refresh_token"]
+    me = client.get("/api/me", headers={"authorization": f"Bearer {r.json()['access_token']}"})
+    assert me.json()["email"] == "phone@example.com"

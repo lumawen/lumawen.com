@@ -307,27 +307,15 @@ class ConfirmScreen extends StatefulWidget {
 
 class _ConfirmScreenState extends State<ConfirmScreen> with Busy {
   final _password = TextEditingController();
-  bool _done = false;
 
+  // Confirming signs you in, so go straight to the dashboard.
   void _confirm() => run(() async {
     await widget.api.confirm(widget.token, _password.text);
-    if (mounted) setState(() => _done = true);
+    if (mounted) _goHome(context);
   });
 
   @override
   Widget build(BuildContext context) {
-    if (_done) {
-      return AuthFrame(
-        title: 'You\'re all set',
-        subtitle: 'Your account is confirmed.',
-        children: [
-          FilledButton(
-            onPressed: () => Navigator.of(context).pushNamed('/login'),
-            child: const Text('Sign in'),
-          ),
-        ],
-      );
-    }
     return AuthFrame(
       title: 'Confirm your account',
       subtitle: 'Enter the password you chose when you signed up.',

@@ -29,6 +29,15 @@ const admin = {
   'created_at': '2026-11-09T00:00:00Z',
 };
 
+const player = {
+  'id': '00000000-0000-0000-0000-000000000002',
+  'email': 'player@example.com',
+  'display_name': null,
+  'role': 'user',
+  'email_verified': true,
+  'created_at': '2026-11-09T00:00:00Z',
+};
+
 void main() {
   testWidgets('signed out: shows the sign-in form', (tester) async {
     final api = fakeApi(
@@ -75,10 +84,10 @@ void main() {
     final api = fakeApi((r) {
       if (r.url.path == '/api/auth/confirm') {
         sentToken = (jsonDecode(r.body) as Map)['token'] as String;
-        return {'status': 'ok'};
+        return {'user': player};
       }
       return switch (r.url.path) {
-        '/api/me' => {'_status': 401, 'detail': 'Please sign in.'},
+        '/api/me' => sentToken == null ? {'_status': 401, 'detail': 'Please sign in.'} : player,
         _ => {'_status': 404},
       };
     });
@@ -89,7 +98,8 @@ void main() {
     await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
     expect(sentToken, 'abc123def');
-    expect(find.text('You\'re all set'), findsOneWidget);
+    expect(find.text('Confirm your account'), findsNothing);
+    expect(find.textContaining('You\'re signed in as'), findsOneWidget);
   });
 
   test('API errors carry the server message', () async {

@@ -202,3 +202,85 @@ def test_worker_stops_cleanly_on_sigint(client, monkeypatch):
         timer.cancel()
         signal.signal(signal.SIGINT, old_int)
         signal.signal(signal.SIGTERM, old_term)
+
+
+def queued_newsletter(client, db, *emails):
+    subs = [subscribed(client, e) for e in emails]
+    as_admin(client)
+    n = draft(client)
+    post(client, f"/{n['id']}/schedule")
+    queue_due_newsletters(db)
+    return n, subs
+
+
+def test_unsubscribing_after_queueing_cancels_their_copy(client, db):
+    n, (stay, leave) = queued_newsletter(client, db, "stay@example.com", "leave@example.com")
+    client.post(f"/api/list/unsubscribe?token={leave.unsubscribe_token}")
+    assert outbox("leave@example.com", "newsletter") == []
+    captured: list[EmailMessage] = []
+    send_due(db, captured.append)
+    assert [m["To"] for m in captured if m["Subject"] == n["subject"]] == ["stay@example.com"]
+
+
+def test_worker_skips_a_newsletter_for_someone_no_longer_subscribed(client, db):
+    from lumawen_api.models import Subscriber
+
+    n, (gone,) = queued_newsletter(client, db, "skip@example.com")
+    sub = db.get(Subscriber, gone.id)
+    sub.status = "unsubscribed"  # e.g. changed straight in the database
+    db.commit()
+    captured: list[EmailMessage] = []
+    send_due(db, captured.append)
+    assert [m for m in captured if m["Subject"] == n["subject"]] == []
+    assert outbox("skip@example.com", "newsletter") == []
+
+
+def test_erasing_a_subscriber_removes_every_email_to_them(client, db):
+    n, (sub,) = queued_newsletter(client, db, "erase-all@example.com")
+    assert outbox("erase-all@example.com")
+    r = client.delete(f"/api/admin/subscribers/{sub.id}", headers=ORIGIN)
+    assert r.status_code == 204
+    assert outbox("erase-all@example.com") == []
+
+
+def test_subject_must_be_one_line(client):
+    as_admin(client)
+    r = client.post(
+        "/api/admin/newsletters",
+        json={"subject": "Hi\r\nBcc: everyone@example.com", "body_text": "x"},
+        headers=ORIGIN,
+    )
+    assert r.status_code == 422
+    n = draft(client)
+    r = client.patch(f"/api/admin/newsletters/{n['id']}", json={"subject": "a\nb"}, headers=ORIGIN)
+    assert r.status_code == 422
+
+
+def test_old_sent_emails_are_purged(client, db):
+    from lumawen_api.mail import purge_outbox
+
+    subscribe(client, "old-mail@example.com")
+    send_due(db, lambda m: None)
+    row = db.scalar(select(OutboxEmail))
+    assert row.status == "sent"
+    assert purge_outbox(db) == 0
+    row.created_at = datetime.now(UTC) - timedelta(days=31)
+    db.commit()
+    assert purge_outbox(db) == 1
+
+
+def test_send_due_stops_between_emails_when_asked(client, db):
+    import threading
+
+    for i in range(3):
+        subscribe(client, f"stop{i}@example.com")
+    stop = threading.Event()
+    sent: list[EmailMessage] = []
+
+    def sender(msg: EmailMessage) -> None:
+        sent.append(msg)
+        stop.set()
+
+    assert send_due(db, sender, stop=stop) == 1
+    assert len(outbox(kind="list_confirm")) == 3
+    assert sum(r.status == "pending" for r in outbox(kind="list_confirm")) == 2

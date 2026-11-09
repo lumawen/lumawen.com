@@ -74,6 +74,7 @@ printf '{"commit": "%s", "built_at": "%s"}\n' "$COMMIT" "$(date -u +%FT%TZ)" > b
 say "Site files -> $WEB"
 rsync -a --delete --exclude /dashboard/ "$DIR/site/" "$WEB/"
 rsync -a --delete "$DIR/app/build/web/" "$WEB/dashboard/"
+touch "$WEB/.deployed-from-repo"
 
 say "Restarting under pm2"
 pm2 startOrReload "$DIR/deploy/ecosystem.config.cjs" --only "lumawen-api-$STAGE,lumawen-mail-$STAGE"

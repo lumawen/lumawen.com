@@ -163,7 +163,7 @@ def _send_confirm(db: Session, user: User, pending_password_hash: str) -> None:
     raw = _issue_email_token(
         db, user, "verify", timedelta(hours=VERIFY_HOURS), pending_password_hash
     )
-    link = f"{get_settings().dashboard_url}/confirm?token={raw}"
+    link = f"{get_settings().dashboard_url}/#/confirm?token={raw}"
     queue_email(
         db,
         user.email,
@@ -184,7 +184,7 @@ def _send_reset(db: Session, user: User) -> None:
         return
     _expire_tokens(db, user, "reset")  # only the newest reset link works
     raw = _issue_email_token(db, user, "reset", timedelta(minutes=RESET_MINUTES))
-    link = f"{get_settings().dashboard_url}/reset?token={raw}"
+    link = f"{get_settings().dashboard_url}/#/reset?token={raw}"
     queue_email(
         db,
         user.email,
@@ -208,7 +208,7 @@ def _send_already_registered(db: Session, user: User) -> None:
         "Hi,\n\n"
         "Someone tried to create a Lumawen account with this email, but you already have one. "
         "If it was you, sign in, or reset your password here:\n\n"
-        f"{get_settings().dashboard_url}/forgot\n\n"
+        f"{get_settings().dashboard_url}/#/forgot\n\n"
         "If it wasn't you, you can ignore this email.\n\n"
         "Lumawen\nhttps://lumawen.com\n",
         "already_registered",

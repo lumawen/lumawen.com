@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from . import __version__, admin, auth, google, health, lists
+from . import __version__, admin, auth, google, health, lists, newsletters
 from .config import get_settings
 
 
@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
     app.include_router(google.router, prefix="/api")
     app.include_router(lists.router, prefix="/api")
     app.include_router(admin.router, prefix="/api")
+    app.include_router(newsletters.router, prefix="/api")
     return app
 
 

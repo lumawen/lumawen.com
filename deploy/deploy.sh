@@ -38,6 +38,7 @@ build_dashboard() {
     git clone --quiet --depth 1 --branch "$version" https://github.com/flutter/flutter.git \
       "$flutter_home.tmp"
     "$flutter_home.tmp/bin/flutter" --disable-analytics >/dev/null
+    rm -rf "$flutter_home"  # a broken earlier install
     mv "$flutter_home.tmp" "$flutter_home"
   fi
   (
@@ -56,8 +57,14 @@ git checkout --quiet --detach origin/main
 COMMIT="$(git rev-parse --short HEAD)"
 echo "main is at $COMMIT"
 
+[[ -f api/.env ]] || { echo "api/.env is missing: run setup-server.sh first." >&2; exit 1; }
+if [[ "$STAGE" == "test" ]]; then
+  # First, before anything on the server changes: the most likely step to fail.
+  say "Dashboard (Flutter web)"
+  build_dashboard
+fi
+
 cd api
-[[ -f .env ]] || { echo "api/.env is missing: run setup-server.sh first." >&2; exit 1; }
 say "Python dependencies"
 uv sync --locked --no-dev --quiet
 say "Database migrations"
@@ -65,8 +72,6 @@ uv run --no-sync alembic upgrade head
 printf '{"commit": "%s", "built_at": "%s"}\n' "$COMMIT" "$(date -u +%FT%TZ)" > build-info.json
 
 if [[ "$STAGE" == "test" ]]; then
-  say "Dashboard (Flutter web)"
-  build_dashboard
   say "Site files -> $WEB"
   rsync -a --delete --exclude /dashboard/ "$DIR/site/" "$WEB/"
   rsync -a --delete "$DIR/app/build/web/" "$WEB/dashboard/"

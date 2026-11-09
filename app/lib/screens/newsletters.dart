@@ -125,15 +125,21 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
   late final _subject = TextEditingController(text: _n?.subject);
   late final _body = TextEditingController(text: _n?.bodyText);
   bool _busy = false;
-  bool _dirty = false;
 
   bool get _editable => _n == null || _n!.status != 'sent';
 
+  /// Unsaved changes: the fields differ from what the server has (it trims the subject).
+  bool get _dirty {
+    final n = _n;
+    if (n == null) return _subject.text.trim().isNotEmpty || _body.text.trim().isNotEmpty;
+    return _subject.text.trim() != n.subject || _body.text != n.bodyText;
+  }
+
   @override
-  void initState() {
-    super.initState();
-    _subject.addListener(() => _dirty = true);
-    _body.addListener(() => _dirty = true);
+  void dispose() {
+    _subject.dispose();
+    _body.dispose();
+    super.dispose();
   }
 
   Future<T?> _run<T>(Future<T> Function() action, {String? done}) async {
@@ -163,11 +169,8 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
           : widget.api.updateNewsletter(_n!.id, _subject.text, _body.text),
       done: quiet ? null : 'Saved',
     );
-    if (saved == null) return false;
-    setState(() {
-      _n = saved;
-      _dirty = false;
-    });
+    if (saved == null || !mounted) return false;
+    setState(() => _n = saved);
     return true;
   }
 
@@ -222,12 +225,12 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
       () => widget.api.schedule(_n!.id, when),
       done: 'Scheduled for ${shortDate(when)}',
     );
-    if (n != null) setState(() => _n = n);
+    if (n != null && mounted) setState(() => _n = n);
   }
 
   Future<void> _cancel() async {
     final n = await _run(() => widget.api.cancel(_n!.id), done: 'Back to draft');
-    if (n != null) setState(() => _n = n);
+    if (n != null && mounted) setState(() => _n = n);
   }
 
   Future<void> _delete() async {
@@ -261,6 +264,24 @@ class _NewsletterEditorState extends State<NewsletterEditor> {
   Widget build(BuildContext context) {
     final n = _n;
     final muted = Colors.white.withValues(alpha: .66);
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final leave =
+            !_dirty ||
+            await _confirm(
+              'Discard changes?',
+              'Your edits since the last save will be lost.',
+              'Discard',
+            );
+        if (leave && context.mounted) Navigator.of(context).pop();
+      },
+      child: _scaffold(n, muted),
+    );
+  }
+
+  Widget _scaffold(Newsletter? n, Color muted) {
     return Scaffold(
       appBar: AppBar(
         title: Text(n == null ? 'New newsletter' : statusLabel(n.status)),

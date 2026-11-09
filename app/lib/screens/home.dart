@@ -30,7 +30,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final user = await widget.api.me();
       if (!mounted) return;
       if (user == null) {
-        Navigator.of(context).pushReplacementNamed('/login');
+        Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
       } else {
         setState(() => _user = user);
       }

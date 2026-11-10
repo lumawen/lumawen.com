@@ -235,6 +235,7 @@ def _stop_on_signals() -> threading.Event:
 def run_worker(session_factory: Callable[[], Session], loop: bool, interval: float = 5.0) -> None:
     settings = get_settings()
     pause = 1.0 / settings.mail_per_second if settings.mail_per_second > 0 else 0.0
+    from .audit import purge_deleted_from_log
     from .auth import purge_throttle, purge_unconfirmed_accounts  # here: avoids an import cycle
     from .lists import purge_unconfirmed
     from .newsletters import purge_archived, queue_due_newsletters
@@ -249,6 +250,7 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
                 purge_unconfirmed_accounts,
                 purge_outbox,
                 purge_archived,
+                purge_deleted_from_log,
             ):
                 try:  # a failed clean-up must never stop emails going out
                     with session_factory() as db:

@@ -11,7 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 
-from .audit import erase_from_log, record
+from .audit import record
 from .auth import DB, AdminUser
 from .mail import forget_address
 from .models import Subscriber
@@ -133,13 +133,22 @@ def export_subscribers(
 @router.delete("/subscribers/{subscriber_id}", status_code=204)
 def delete_subscriber(subscriber_id: uuid.UUID, admin: AdminUser, db: DB) -> Response:
     """Erase someone completely (a privacy request). To just stop emails, they unsubscribe."""
-    email = db.scalar(
-        delete(Subscriber).where(Subscriber.id == subscriber_id).returning(Subscriber.email)
-    )
-    if email is None:
+    gone = db.execute(
+        delete(Subscriber)
+        .where(Subscriber.id == subscriber_id)
+        .returning(Subscriber.email, Subscriber.status, Subscriber.created_at)
+    ).first()
+    if gone is None:
         raise HTTPException(404, "No such subscriber.")
+    email, sub_status, created_at = gone
     forget_address(db, email)
-    erase_from_log(db, email, "subscriber")
-    record(db, admin, "subscriber.erase", "(erased subscriber)")
+    record(
+        db,
+        admin,
+        "subscriber.erase",
+        email,
+        status=sub_status,
+        signed_up=created_at.date().isoformat(),
+    )
     db.commit()
     return Response(status_code=204)

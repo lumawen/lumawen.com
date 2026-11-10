@@ -23,8 +23,11 @@ String describe(Activity a) => switch (a.action) {
     'suspended ${a.target}${a.detail['reason'] == null ? '' : ' (${a.detail['reason']})'}',
   'user.unsuspend' => 'unsuspended ${a.target}',
   'user.sign_out' => 'signed ${a.target} out everywhere',
-  'user.delete' => 'deleted the account ${a.target}',
-  'subscriber.erase' => 'erased ${a.target} from the mailing list',
+  'user.delete' => 'deleted the account ${_erased(a)} from users${_since(a, 'role', 'joined')}',
+  'subscriber.erase' =>
+    'deleted the subscriber ${_erased(a)} from the mailing list${_since(a, 'status', 'signed_up')}',
+  'newsletter.edit_draft' => 'edited the draft "${a.target}"',
+  'newsletter.edit_scheduled' => 'edited the scheduled "${a.target}"',
   'newsletter.schedule' => 'scheduled "${a.target}"',
   'newsletter.cancel' => 'cancelled "${a.target}"',
   'newsletter.delete_draft' => 'deleted the draft "${a.target}"',
@@ -33,6 +36,18 @@ String describe(Activity a) => switch (a.action) {
   'newsletter.restore' => 'restored "${a.target}"',
   _ => '${a.action} ${a.target}',
 };
+
+// The address is blanked 30 days after a delete (rows before 2026-11-10 never had one).
+String _erased(Activity a) => a.target.startsWith('(') ? '(address erased)' : "'${a.target}'";
+
+// " (Contributor, joined 2026-11-09)" from the row's details, when it has them.
+String _since(Activity a, String kindKey, String dateKey) {
+  final kind = a.detail[kindKey] as String?;
+  final date = a.detail[dateKey] as String?;
+  final verb = dateKey == 'joined' ? 'joined' : 'signed up';
+  final parts = [if (kind != null) roleLabels[kind] ?? kind, if (date != null) '$verb $date'];
+  return parts.isEmpty ? '' : ' (${parts.join(', ')})';
+}
 
 class _ActivityTabState extends State<ActivityTab> with AutomaticKeepAliveClientMixin {
   final List<Activity> _entries = [];

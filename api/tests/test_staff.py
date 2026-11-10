@@ -277,14 +277,17 @@ def test_send_refuses_a_version_the_admin_has_not_seen(app, client):
     assert r.status_code == 200, r.text
 
 
-def test_erasing_scrubs_the_activity_log(client):
+def test_deleting_an_account_keeps_its_history_and_names_it(client):
     as_admin(client)
     uid = make("forget-me@example.com")
     client.post(f"/api/admin/users/{uid}/suspend", json={}, headers=ORIGIN)
     client.delete(f"/api/admin/users/{uid}", headers=ORIGIN)
     entries = client.get("/api/admin/activity").json()["entries"]
-    assert all("forget-me" not in e["target"] for e in entries)
-    assert [e["target"] for e in entries] == ["(erased account)", "(erased)"]
+    assert [(e["action"], e["target"]) for e in entries] == [
+        ("user.delete", "forget-me@example.com"),
+        ("user.suspend", "forget-me@example.com"),
+    ]
+    assert entries[0]["detail"]["role"] == "user" and entries[0]["detail"]["joined"]
 
 
 def test_list_offsets_past_the_database_range_are_rejected_cleanly(client):
@@ -330,3 +333,36 @@ def test_every_draft_edit_is_in_the_activity_log(app, client):
     assert detail["subject_before"] == "Pickups"
     assert detail["body_before"] != detail["body_after"]
     assert len(detail["body_after"]) == 16
+
+
+def test_deleted_addresses_leave_the_log_after_30_days(client, db):
+    from lumawen_api.audit import purge_deleted_from_log
+    from lumawen_api.models import AuditEntry
+
+    as_admin(client)
+    uid = make("old@example.com")
+    client.post(f"/api/admin/users/{uid}/suspend", json={}, headers=ORIGIN)
+    client.delete(f"/api/admin/users/{uid}", headers=ORIGIN)
+    assert purge_deleted_from_log(db) == 0  # still within 30 days: the address stays
+    # A mailing-list sign-up with the same address keeps its own history.
+    subscribe(client, "old@example.com")
+    sub_id = subscriber("old@example.com").id
+    client.delete(f"/api/admin/subscribers/{sub_id}", headers=ORIGIN)
+    db.execute(
+        update(AuditEntry)
+        .where(AuditEntry.action.startswith("user."))
+        .values(created_at=datetime.now(UTC) - timedelta(days=31))
+    )
+    db.commit()
+    # They sign up again; the new account's history is not theirs to lose.
+    uid = make("old@example.com")
+    client.post(f"/api/admin/users/{uid}/suspend", json={}, headers=ORIGIN)
+    assert purge_deleted_from_log(db) == 1
+    entries = client.get("/api/admin/activity").json()["entries"]
+    assert [(e["action"], e["target"]) for e in entries] == [
+        ("user.suspend", "old@example.com"),
+        ("subscriber.erase", "old@example.com"),
+        ("user.delete", "(erased)"),
+        ("user.suspend", "(erased)"),
+    ]
+    assert purge_deleted_from_log(db) == 0  # done once

@@ -207,6 +207,9 @@ def test_admin_can_erase_a_subscriber(client):
     origin = {"Origin": "http://localhost:3040"}
     assert client.delete(f"/api/admin/subscribers/{sub.id}", headers=origin).status_code == 204
     assert subscriber("erase@example.com") is None
+    [entry] = client.get("/api/admin/activity").json()["entries"]
+    assert entry["action"] == "subscriber.erase" and entry["target"] == "erase@example.com"
+    assert entry["detail"]["status"] == "subscribed" and entry["detail"]["signed_up"]
     assert client.delete(f"/api/admin/subscribers/{sub.id}", headers=origin).status_code == 404
 
 

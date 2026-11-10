@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 
-from .audit import erase_from_log, record
+from .audit import record
 from .auth import (
     DB,
     AdminUser,
@@ -255,8 +255,14 @@ def delete_user(user_id: uuid.UUID, admin: AdminUser, db: DB) -> Response:
             OutboxEmail.kind.not_in(("newsletter", "list_confirm")),
         )
     )
-    erase_from_log(db, target.email, "user")
-    record(db, admin, "user.delete", "(erased account)", role=target.role)
+    record(
+        db,
+        admin,
+        "user.delete",
+        target.email,
+        role=target.role,
+        joined=target.created_at.date().isoformat(),
+    )
     db.execute(delete(User).where(User.id == target.id))  # the database cascades the rest
     db.commit()
     return Response(status_code=204)

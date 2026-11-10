@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lumawen/.github/main/lumawen-logo-700-Bold-white-transparent-square-512x512.png">
+    <img alt="lumawen" src="https://raw.githubusercontent.com/lumawen/.github/main/lumawen-logo-700-Bold-black-transparent-square-512x512.png" width="160">
+  </picture>
+</p>
+
 # lumawen.com
 
 The Lumawen website: https://lumawen.com

@@ -19,6 +19,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
+from .emailhtml import LOGO_CID, logo_png, render_html
 from .models import OutboxEmail
 
 log = logging.getLogger("lumawen.mail")
@@ -61,6 +62,10 @@ def build_message(row: OutboxEmail, settings: Settings) -> EmailMessage:
     else:
         msg["Auto-Submitted"] = "auto-generated"
     msg.set_content(row.body_text)
+    msg.add_alternative(render_html(row.body_text, row.subject, row.kind), subtype="html")
+    msg.get_payload()[1].add_related(
+        logo_png(), "image", "png", cid=f"<{LOGO_CID}>", filename="lumawen.png"
+    )
     return msg
 
 

@@ -9,13 +9,14 @@ mail apps use for their unsubscribe button), then delivers them at LUMAWEN_MAIL_
 Run it with: lumawen-admin send-emails --loop
 """
 
+import hashlib
 import logging
 import unicodedata
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import delete, func, literal, select
@@ -26,6 +27,7 @@ from .audit import record
 from .auth import DB, AdminUser, Email, WriterUser, normalize_email
 from .config import get_settings
 from .models import Newsletter, OutboxEmail, Subscriber
+from .paging import Limit, Offset
 
 log = logging.getLogger("lumawen.newsletters")
 router = APIRouter(prefix="/admin/newsletters", tags=["admin"])
@@ -156,6 +158,10 @@ def _not_sent(n: Newsletter) -> None:
         raise HTTPException(409, "This newsletter was already sent.")
 
 
+def _body_hash(body: str) -> str:
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
 def _writable(n: Newsletter, user) -> None:
     """Admins can edit until it's sent; contributors only drafts."""
     _not_sent(n)
@@ -235,8 +241,8 @@ def list_newsletters(
     _: WriterUser,
     db: DB,
     archived: bool = False,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: Limit = 50,
+    offset: Offset = 0,
 ) -> NewsletterPage:
     """Newest first. archived=true lists the deleted sent ones (kept 30 days)."""
     where = Newsletter.archived_at.is_not(None) if archived else Newsletter.archived_at.is_(None)
@@ -273,12 +279,24 @@ def edit_newsletter(
 ) -> NewsletterOut:
     n = _get(db, newsletter_id, lock=True)
     _writable(n, writer)
-    if n.status == "scheduled":
-        record(db, writer, "newsletter.edit_scheduled", n.subject)
+    before = n.subject, _body_hash(n.body_text)
     if body.subject is not None:
         n.subject = body.subject
     if body.body_text is not None:
         n.body_text = body.body_text
+    # Every edit is logged, drafts too, with a hash of the body, so a body swapped before an
+    # admin schedules it shows up in the activity log with who did it.
+    after = n.subject, _body_hash(n.body_text)
+    if after != before:
+        record(
+            db,
+            writer,
+            f"newsletter.edit_{n.status}",
+            n.subject,
+            subject_before=before[0],
+            body_before=before[1],
+            body_after=after[1],
+        )
     db.commit()
     db.refresh(n)
     return _out(n, Delivery())

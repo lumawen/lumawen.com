@@ -15,6 +15,7 @@ from .audit import erase_from_log, record
 from .auth import DB, AdminUser
 from .mail import forget_address
 from .models import Subscriber
+from .paging import Limit, Offset
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -66,8 +67,8 @@ def list_subscribers(
     db: DB,
     status: StatusFilter | None = None,
     q: str | None = Query(None, max_length=320),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: Limit = 50,
+    offset: Offset = 0,
 ) -> SubscriberPage:
     counts = dict(
         db.execute(select(Subscriber.status, func.count()).group_by(Subscriber.status)).all()
@@ -138,7 +139,7 @@ def delete_subscriber(subscriber_id: uuid.UUID, admin: AdminUser, db: DB) -> Res
     if email is None:
         raise HTTPException(404, "No such subscriber.")
     forget_address(db, email)
-    erase_from_log(db, email)
+    erase_from_log(db, email, "subscriber")
     record(db, admin, "subscriber.erase", "(erased subscriber)")
     db.commit()
     return Response(status_code=204)

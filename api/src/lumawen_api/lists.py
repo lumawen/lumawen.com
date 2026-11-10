@@ -16,14 +16,14 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .auth import CHECK_EMAIL, DB, Email, Status, _client_ip, _count_attempt, normalize_email
 from .config import get_settings
 from .mail import forget_address, queue_email
 from .maildomain import CANT_RECEIVE, accepts_mail
-from .models import OutboxEmail, Subscriber
+from .models import Subscriber
 from .security import hash_token, new_token
 
 router = APIRouter(prefix="/list", tags=["mailing list"])
@@ -32,8 +32,9 @@ log = logging.getLogger("lumawen.lists")
 CONFIRM_DAYS = 7
 # Sign-ups from one address (IPv6 /64) per hour, so nobody can mail-bomb a list of strangers.
 SIGNUPS_PER_IP_PER_HOUR = 10
-# All confirm emails per hour, so even someone with many IPs can't use us to spam strangers.
-CONFIRMS_PER_HOUR = 300
+# There is no global cap on confirm emails: an attacker with a few dozen IPs could keep it full
+# and silently switch off every real sign-up (the same reason account confirms have none).
+# The per-IP limit above and the per-address limit in queue_email bound what anyone can send.
 # Sign-ups never confirmed are deleted after this many days (see purge_unconfirmed).
 UNCONFIRMED_DAYS = 30
 
@@ -59,21 +60,7 @@ def unsubscribe_url(sub: Subscriber) -> str:
     return list_url("unsubscribe", sub.unsubscribe_token)
 
 
-def _confirms_last_hour(db) -> int:
-    return db.scalar(
-        select(func.count())
-        .select_from(OutboxEmail)
-        .where(
-            OutboxEmail.kind == "list_confirm",
-            OutboxEmail.created_at > _now() - timedelta(hours=1),
-        )
-    )
-
-
 def _send_confirm(db, sub: Subscriber) -> None:
-    if _confirms_last_hour(db) >= CONFIRMS_PER_HOUR:
-        log.warning("hourly cap of %s confirm emails reached; not emailing", CONFIRMS_PER_HOUR)
-        return
     raw, digest = new_token()
     body = (
         "Hi,\n\n"

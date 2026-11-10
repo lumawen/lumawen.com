@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 from helpers import signed_up, web_login
 from sqlalchemy import func, select, update
-from test_lists import ADMIN_PASSWORD, as_admin
+from test_lists import ADMIN_PASSWORD, as_admin, subscribe, subscriber
 
 from lumawen_api.db import _session_factory
 from lumawen_api.models import Newsletter, User
@@ -285,3 +285,48 @@ def test_erasing_scrubs_the_activity_log(client):
     entries = client.get("/api/admin/activity").json()["entries"]
     assert all("forget-me" not in e["target"] for e in entries)
     assert [e["target"] for e in entries] == ["(erased account)", "(erased)"]
+
+
+def test_list_offsets_past_the_database_range_are_rejected_cleanly(client):
+    as_admin(client)
+    for path in ("users", "activity", "newsletters", "subscribers"):
+        r = client.get(f"/api/admin/{path}?offset={2**63}")
+        assert r.status_code == 422, (path, r.text)
+        r = client.get(f"/api/admin/{path}?offset={2**63 - 1}")
+        assert r.status_code == 200, (path, r.text)
+
+
+def test_erasing_a_subscriber_keeps_the_account_history_for_the_same_email(client):
+    as_admin(client)
+    uid = make("shared@example.com")
+    r = client.put(f"/api/admin/users/{uid}/role", json={"role": "moderator"}, headers=ORIGIN)
+    assert r.status_code == 200
+    # Anyone can sign this address up to the list; the admin then erases that sign-up.
+    assert subscribe(client, "shared@example.com").status_code == 202
+    sub_id = subscriber("shared@example.com").id
+    assert client.delete(f"/api/admin/subscribers/{sub_id}", headers=ORIGIN).status_code == 204
+    entries = client.get("/api/admin/activity").json()["entries"]
+    role_rows = [e for e in entries if e["action"] == "user.role"]
+    assert [e["target"] for e in role_rows] == ["shared@example.com"]
+
+
+def test_every_draft_edit_is_in_the_activity_log(app, client):
+    as_admin(client)
+    r = client.post(
+        "/api/admin/newsletters", json={"subject": "Pickups", "body_text": "Hi"}, headers=ORIGIN
+    )
+    base = f"/api/admin/newsletters/{r.json()['id']}"
+    make("rae@example.com", "contributor")
+    rae = as_(app, "rae@example.com")
+    r = rae.patch(base, json={"body_text": "Swapped body"}, headers=ORIGIN)
+    assert r.status_code == 200
+    # Saving with nothing changed adds nothing.
+    assert rae.patch(base, json={"body_text": "Swapped body"}, headers=ORIGIN).status_code == 200
+    [entry] = client.get("/api/admin/activity").json()["entries"]
+    assert entry["action"] == "newsletter.edit_draft"
+    assert entry["actor_email"] == "rae@example.com"
+    assert entry["target"] == "Pickups"
+    detail = entry["detail"]
+    assert detail["subject_before"] == "Pickups"
+    assert detail["body_before"] != detail["body_after"]
+    assert len(detail["body_after"]) == 16

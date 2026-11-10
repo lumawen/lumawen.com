@@ -210,13 +210,14 @@ def test_admin_can_erase_a_subscriber(client):
     assert client.delete(f"/api/admin/subscribers/{sub.id}", headers=origin).status_code == 404
 
 
-def test_confirm_emails_have_a_global_hourly_cap(client, monkeypatch):
-    monkeypatch.setattr("lumawen_api.lists.CONFIRMS_PER_HOUR", 2)
-    monkeypatch.setattr("lumawen_api.lists.SIGNUPS_PER_IP_PER_HOUR", 100)
-    for i in range(4):
-        assert subscribe(client, f"cap{i}@example.com").status_code == 202
-    assert len(outbox(kind="list_confirm")) == 2
-    assert subscriber("cap3@example.com").confirm_token_hash is None
+def test_a_flood_of_signups_cannot_switch_off_real_ones(client, monkeypatch):
+    """No global cap: many sign-ups from many IPs must not silently drop the next person's."""
+    monkeypatch.setattr("lumawen_api.lists.SIGNUPS_PER_IP_PER_HOUR", 1000)
+    for i in range(350):
+        assert subscribe(client, f"flood{i}@example.com").status_code == 202
+    assert subscribe(client, "real@example.com").status_code == 202
+    assert outbox("real@example.com", "list_confirm")
+    assert subscriber("real@example.com").confirm_token_hash is not None
 
 
 def test_unconfirmed_signups_are_purged(client, db):

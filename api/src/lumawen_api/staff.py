@@ -23,6 +23,7 @@ from .auth import (
     _revoke_all,
 )
 from .models import ROLES, AuditEntry, AuthSession, OutboxEmail, User, UserIdentity
+from .paging import Limit, Offset
 
 router = APIRouter(prefix="/admin", tags=["staff"])
 
@@ -117,8 +118,8 @@ def list_users(
     q: str | None = Query(None, max_length=320),
     role: Role | None = None,
     suspended: bool | None = None,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: Limit = 50,
+    offset: Offset = 0,
 ) -> UserPage:
     """Everyone with an account, newest first. q matches email or name."""
     counts = dict(db.execute(select(User.role, func.count()).group_by(User.role)).all())
@@ -254,7 +255,7 @@ def delete_user(user_id: uuid.UUID, admin: AdminUser, db: DB) -> Response:
             OutboxEmail.kind.not_in(("newsletter", "list_confirm")),
         )
     )
-    erase_from_log(db, target.email)
+    erase_from_log(db, target.email, "user")
     record(db, admin, "user.delete", "(erased account)", role=target.role)
     db.execute(delete(User).where(User.id == target.id))  # the database cascades the rest
     db.commit()
@@ -283,8 +284,8 @@ def activity(
     _: SecurityUser,
     db: DB,
     q: str | None = Query(None, max_length=320),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: Limit = 50,
+    offset: Offset = 0,
 ) -> AuditPage:
     """Staff actions, newest first. q matches who did it or to whom."""
     query = select(AuditEntry)

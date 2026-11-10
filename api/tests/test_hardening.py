@@ -92,3 +92,22 @@ def test_a_flood_does_not_block_the_confirm_link(client, app, monkeypatch):
     token = register(client, "fresh@example.com")
     _flood(app, "fresh@example.com", 3)
     assert confirm(client, token).status_code == 200
+
+
+def test_busy_password_hashing_answers_503_instead_of_queueing_forever(client, monkeypatch):
+    """When every Argon2 slot stays taken, sign-in gives up fast so other routes keep working."""
+    from lumawen_api import security
+
+    monkeypatch.setattr(security, "HASH_WAIT_SECONDS", 0.05)
+    taken = 0
+    while security._slots.acquire(blocking=False):
+        taken += 1
+    try:
+        r = web_login(client, "busy@example.com")
+        assert r.status_code == 503
+        assert r.headers["retry-after"] == "2"
+        assert client.get("/api/health").status_code == 200
+    finally:
+        for _ in range(taken):
+            security._slots.release()
+    assert web_login(client, "busy@example.com").status_code == 401

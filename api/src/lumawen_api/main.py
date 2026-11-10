@@ -1,9 +1,19 @@
 """The FastAPI application. Run: uvicorn lumawen_api.main:app --port 3040"""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from . import __version__, admin, auth, google, health, lists, newsletters, staff
 from .config import get_settings
+from .security import HashingBusy
+
+
+def _hashing_busy(request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        {"detail": "Lumawen is busy right now. Try again in a moment."},
+        status_code=503,
+        headers={"Retry-After": "2"},
+    )
 
 
 def create_app() -> FastAPI:
@@ -17,6 +27,7 @@ def create_app() -> FastAPI:
         openapi_url=None if is_prod else "/api/openapi.json",
         redoc_url=None,
     )
+    app.add_exception_handler(HashingBusy, _hashing_busy)
     app.include_router(health.router, prefix="/api")
     app.include_router(auth.router, prefix="/api")
     app.include_router(auth.me_router, prefix="/api")

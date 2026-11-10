@@ -215,8 +215,20 @@ class Api {
     return User.fromJson((r as Map)['user'] as Map<String, dynamic>);
   }
 
-  Future<User> google(String idToken) async {
-    final r = await _send('POST', 'auth/google', body: {'id_token': idToken});
+  /// Signs in, or returns null when the address isn't one Google hosts: then we emailed a
+  /// link, and the person finishes with [googleConfirm] using the same Google account.
+  Future<User?> google(String idToken) async {
+    final r = await _send('POST', 'auth/google', body: {'id_token': idToken}) as Map;
+    if (r['status'] == 'check_email') return null;
+    return User.fromJson(r['user'] as Map<String, dynamic>);
+  }
+
+  Future<User> googleConfirm(String token, String idToken) async {
+    final r = await _send(
+      'POST',
+      'auth/google/confirm',
+      body: {'token': token, 'id_token': idToken},
+    );
     return User.fromJson((r as Map)['user'] as Map<String, dynamic>);
   }
 

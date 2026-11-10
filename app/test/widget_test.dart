@@ -175,6 +175,19 @@ void main() {
     expect(find.textContaining('You\'re signed in as'), findsOneWidget);
   });
 
+  test('Google sign-in for other addresses waits for the emailed link', () async {
+    final paths = <String>[];
+    final api = fakeApi((r) {
+      paths.add(r.url.path);
+      if (r.url.path.endsWith('/google')) return {'_status': 202, 'status': 'check_email'};
+      expect((jsonDecode(r.body) as Map)['token'], 'link-token');
+      return {'user': admin};
+    });
+    expect(await api.google('id-token'), isNull);
+    expect((await api.googleConfirm('link-token', 'id-token')).email, 'admin@lumawen.com');
+    expect(paths, ['/api/auth/google', '/api/auth/google/confirm']);
+  });
+
   test('API errors carry the server message', () async {
     final api = fakeApi((r) => {'_status': 409, 'detail': 'This newsletter was already sent.'});
     expect(

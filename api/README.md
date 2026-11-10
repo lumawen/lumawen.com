@@ -27,7 +27,8 @@ Email accounts with Argon2 passwords. All routes are under `/api`:
 | `POST /auth/refresh` | App only. Rotates both tokens. Re-using the previous token within 30 s gets `409` (a retry or race); later, it ends the session. |
 | `POST /auth/logout`, `/auth/logout-all` | Ends this session, or every session. |
 | `POST /auth/forgot-password`, `/auth/reset-password` | One-time reset link (60 min). A reset signs out every device. |
-| `POST /auth/google` | Sign in with a Google ID token (from the web dashboard or the Android app). Links to the account with the same email, or creates one. |
+| `POST /auth/google` | Sign in with a Google ID token (from the web dashboard or the Android app). Links to the account with the same email, or creates one; for addresses Google doesn't host, `202 check_email` and an emailed link instead (see below). |
+| `POST /auth/google/confirm` | `{token, id_token}`: finish that emailed Google sign-in with the same Google account. |
 | `GET /me` | The signed-in user. |
 
 Five wrong passwords from one IP for one email pause that pair for 15 minutes, and 50 from anywhere
@@ -46,11 +47,13 @@ uvicorn with `--proxy-headers --forwarded-allow-ips 127.0.0.1` so the visitor's 
 `limit_req` adds limits per IPv4 address or IPv6 /64.
 
 Google sign-in accepts only ID tokens issued to our own OAuth client IDs
-(`LUMAWEN_GOOGLE_CLIENT_IDS`) for a Google-verified email. It links to an existing account only
-when Google really owns the address (Gmail, or a Workspace domain via the `hd` claim); for any
-other address an existing account must sign in with its password. A password reset removes
-linked Google accounts. (Unlike register, a 409 here can tell someone holding a Google account
-for that exact address that a Lumawen account exists. Workspace alias domains don't auto-link.) Google's signing keys are cached and fetched with a 5 s timeout.
+(`LUMAWEN_GOOGLE_CLIENT_IDS`) for a Google-verified email. It signs straight in only when Google
+really owns the address (Gmail, or a Workspace domain via the `hd` claim). For any other address
+it answers `202 check_email` and emails a link (24 hours); `POST /auth/google/confirm` with that
+link's token and an ID token from the same Google account links it and signs in. The answer is
+the same whether or not the address has an account, and an old Google account for an address
+can't link without the inbox. A password reset removes linked Google accounts. Workspace alias
+domains don't auto-link. Google's signing keys are cached and fetched with a 5 s timeout.
 
 Emails go into the `email_outbox` table and a worker sends them:
 

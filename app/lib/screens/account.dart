@@ -117,6 +117,7 @@ class _LoginScreenState extends State<LoginScreen> with Busy {
   final _email = TextEditingController();
   final _password = TextEditingController();
   String? _googleClientId;
+  bool _checkEmail = false;
 
   @override
   void initState() {
@@ -135,12 +136,26 @@ class _LoginScreenState extends State<LoginScreen> with Busy {
   }
 
   void _google(String idToken) => run(() async {
-    await widget.api.google(idToken);
-    if (mounted) _goHome(context);
+    final user = await widget.api.google(idToken);
+    if (!mounted) return;
+    if (user == null) {
+      setState(() => _checkEmail = true);
+    } else {
+      _goHome(context);
+    }
   });
 
   @override
   Widget build(BuildContext context) {
+    if (_checkEmail) {
+      return const AuthFrame(
+        title: 'Check your email',
+        subtitle:
+            'We sent a link to the address on your Google account. Open it and continue with '
+            'the same Google account to finish signing in. It works for 24 hours.',
+        children: [],
+      );
+    }
     return AuthFrame(
       title: 'Sign in',
       children: [
@@ -330,6 +345,50 @@ class _ConfirmScreenState extends State<ConfirmScreen> with Busy {
         _gap,
         errorText(),
         submit('Confirm', _confirm),
+      ],
+    );
+  }
+}
+
+// ---- finish Google sign-in (from the email link) -----------------------------------------
+
+class GoogleConfirmScreen extends StatefulWidget {
+  const GoogleConfirmScreen({super.key, required this.api, required this.token});
+  final Api api;
+  final String token;
+
+  @override
+  State<GoogleConfirmScreen> createState() => _GoogleConfirmScreenState();
+}
+
+class _GoogleConfirmScreenState extends State<GoogleConfirmScreen> with Busy {
+  String? _googleClientId;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.api.googleClientId().then((id) {
+      if (mounted) setState(() => _googleClientId = id);
+    }, onError: (_) {});
+  }
+
+  void _google(String idToken) => run(() async {
+    await widget.api.googleConfirm(widget.token, idToken);
+    if (mounted) _goHome(context);
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AuthFrame(
+      title: 'Finish signing in with Google',
+      subtitle: 'Continue with the same Google account you used to sign in.',
+      children: [
+        if (_googleClientId != null)
+          Center(
+            child: GoogleButton(clientId: _googleClientId!, onIdToken: _google),
+          ),
+        _gap,
+        errorText(),
       ],
     );
   }

@@ -149,7 +149,12 @@ BAD_LINK = "This link is invalid or has expired."
 
 
 def _issue_email_token(
-    db: Session, user: User, purpose: str, lifetime: timedelta, pending_password: str | None = None
+    db: Session,
+    user: User,
+    purpose: str,
+    lifetime: timedelta,
+    pending_password: str | None = None,
+    google_subject: str | None = None,
 ) -> str:
     raw, digest = new_token()
     db.add(
@@ -158,6 +163,7 @@ def _issue_email_token(
             purpose=purpose,
             token_hash=digest,
             pending_password_hash=pending_password,
+            google_subject=google_subject,
             expires_at=_now() + lifetime,
         )
     )
@@ -364,7 +370,7 @@ def purge_unconfirmed_accounts(db: Session) -> int:
         select(EmailToken.id)
         .where(
             EmailToken.user_id == User.id,
-            EmailToken.purpose.in_(("verify", "reset")),
+            EmailToken.purpose.in_(("verify", "reset", "google")),
             EmailToken.used_at.is_(None),
             EmailToken.expires_at > _now(),
         )

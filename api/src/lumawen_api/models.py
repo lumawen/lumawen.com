@@ -101,20 +101,25 @@ class AuthSession(Base):
 
 
 class EmailToken(Base):
-    """One-time link sent by email: confirm an address (verify) or reset a password (reset)."""
+    """One-time link sent by email: confirm an address (verify), reset a password (reset), or
+    link a Google account whose address Google doesn't host (google)."""
 
     __tablename__ = "email_tokens"
     __table_args__ = (
-        CheckConstraint("purpose IN ('verify', 'reset')", name="email_tokens_purpose_valid"),
+        CheckConstraint(
+            "purpose IN ('verify', 'reset', 'google')", name="email_tokens_purpose_valid"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    purpose: Mapped[str] = mapped_column(String(20), nullable=False)  # verify | reset
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False)  # verify | reset | google
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     pending_password_hash: Mapped[str | None] = mapped_column(String(255))
+    # google: the Google account ("sub") that must finish the link.
+    google_subject: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

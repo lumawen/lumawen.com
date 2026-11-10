@@ -1,7 +1,7 @@
 """Sign in with Google (Google's token check is replaced by a fake)."""
 
 import pytest
-from helpers import PASSWORD, confirm, register, signed_up, web_login
+from helpers import PASSWORD, confirm, outbox, register, signed_up, web_login
 from sqlalchemy import select
 
 from lumawen_api import config, google
@@ -157,26 +157,84 @@ def test_workspace_account_links_when_google_hosts_the_domain(client, google_set
     assert google_login(client, "t").status_code == 200
 
 
-def test_other_addresses_never_take_over_existing_accounts(client, google_setup, db):
-    """email_verified on a non-Gmail, non-Workspace address may be years old."""
+def google_confirm(client, token, link, kind="web"):
+    return client.post(
+        "/api/auth/google/confirm", json={"id_token": token, "token": link, "client": kind}
+    )
+
+
+def google_link(email: str) -> str:
+    from helpers import link_token, outbox
+
+    return link_token(outbox(email, "google_confirm")[-1])
+
+
+def test_other_addresses_get_the_same_answer_whether_or_not_an_account_exists(
+    client, google_setup, db
+):
+    """email_verified on a non-Gmail, non-Workspace address may be years old, and the answer
+    must not tell anyone whether the address has an account."""
     signed_up(client, "ops@smallco.example")
-    from lumawen_api.cli import create_admin
-
-    create_admin("ops@smallco.example", None)
     google_setup["old"] = claims(sub="old-owner", email="ops@smallco.example")
-    r = google_login(client, "old")
-    assert r.status_code == 409
+    google_setup["new"] = claims(sub="new-person", email="nobody@smallco.example")
+    taken, free = google_login(client, "old"), google_login(client, "new")
+    assert taken.status_code == free.status_code == 202
+    assert taken.json() == free.json() == {"status": "check_email"}
     assert db.scalars(select(UserIdentity)).all() == []
-    # A pending sign-up isn't cancelled either.
-    link = register(client, "new@smallco.example", "real owner pw")
+    assert outbox("ops@smallco.example", "google_confirm")
+
+
+def test_old_google_account_cannot_take_over_without_the_inbox(client, google_setup, db):
+    signed_up(client, "ops@smallco.example")
+    google_setup["old"] = claims(sub="old-owner", email="ops@smallco.example")
+    assert google_login(client, "old").status_code == 202
+    link = google_link("ops@smallco.example")
+    # The inbox's real owner opens the link but has a different Google account: no link.
+    google_setup["mine"] = claims(sub="real-owner", email="ops@smallco.example")
+    assert google_confirm(client, "mine", link).status_code == 400
+    assert db.scalars(select(UserIdentity)).all() == []
+    # A pending sign-up isn't cancelled by just asking.
+    pending = register(client, "new@smallco.example", "real owner pw")
     google_setup["old2"] = claims(sub="old-owner-2", email="new@smallco.example")
-    assert google_login(client, "old2").status_code == 409
-    assert confirm(client, link, "real owner pw").status_code == 200
+    assert google_login(client, "old2").status_code == 202
+    assert confirm(client, pending, "real owner pw").status_code == 200
 
 
-def test_other_addresses_can_create_new_accounts(client, google_setup):
+def test_other_addresses_link_after_the_emailed_confirm(client, google_setup, db):
     google_setup["t"] = claims(email="someone@elsewhere.example")
-    assert google_login(client, "t").status_code == 200
+    assert google_login(client, "t").status_code == 202
+    assert client.get("/api/me").status_code == 401  # not signed in yet
+    link = google_link("someone@elsewhere.example")
+    r = google_confirm(client, "t", link)
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email_verified"] is True
+    assert client.get("/api/me").json()["email"] == "someone@elsewhere.example"
+    assert google_confirm(client, "t", link).status_code == 400  # one use
+    assert google_login(client, "t").status_code == 200  # linked: straight in from now on
+
+
+def test_google_confirm_links_an_existing_password_account(client, google_setup, db):
+    signed_up(client, "me@elsewhere.example")
+    google_setup["t"] = claims(sub="mine", email="me@elsewhere.example")
+    assert google_login(client, "t").status_code == 202
+    assert google_confirm(client, "t", google_link("me@elsewhere.example")).status_code == 200
+    assert web_login(client, "me@elsewhere.example").status_code == 200  # password still works
+    assert len(db.scalars(select(UserIdentity)).all()) == 1
+
+
+def test_expired_google_links_are_refused(client, google_setup, db):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from lumawen_api.models import EmailToken
+
+    google_setup["t"] = claims(email="late@elsewhere.example")
+    google_login(client, "t")
+    link = google_link("late@elsewhere.example")
+    db.execute(update(EmailToken).values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    db.commit()
+    assert google_confirm(client, "t", link).status_code == 400
 
 
 def test_password_reset_removes_linked_google_accounts(client, google_setup, db):
@@ -184,11 +242,13 @@ def test_password_reset_removes_linked_google_accounts(client, google_setup, db)
 
     google_setup["t"] = claims(email="someone@elsewhere.example")
     google_login(client, "t")
+    google_confirm(client, "t", google_link("someone@elsewhere.example"))
+    assert len(db.scalars(select(UserIdentity)).all()) == 1
     client.post("/api/auth/forgot-password", json={"email": "someone@elsewhere.example"})
     token = link_token(outbox("someone@elsewhere.example", "reset")[-1])
     client.post("/api/auth/reset-password", json={"token": token, "password": PASSWORD})
     assert db.scalars(select(UserIdentity)).all() == []
-    assert google_login(client, "t").status_code == 409  # now it's the inbox owner's account
+    assert google_login(client, "t").status_code == 202  # has to prove the inbox again
 
 
 def test_string_email_verified_is_refused(client, google_setup):
@@ -196,7 +256,7 @@ def test_string_email_verified_is_refused(client, google_setup):
     assert google_login(client, "s").status_code == 403
 
 
-def test_parallel_first_sign_ins_with_other_address_all_succeed(app, google_setup):
+def test_parallel_first_sign_ins_with_other_address_all_answer_check_email(app, google_setup):
     from concurrent.futures import ThreadPoolExecutor
 
     from fastapi.testclient import TestClient
@@ -208,7 +268,7 @@ def test_parallel_first_sign_ins_with_other_address_all_succeed(app, google_setu
             return google_login(c, "t", kind="app").status_code
 
     with ThreadPoolExecutor(6) as pool:
-        assert set(pool.map(go, range(6))) == {200}
+        assert set(pool.map(go, range(6))) == {202}
 
 
 def test_non_string_claims_are_refused(client, google_setup):

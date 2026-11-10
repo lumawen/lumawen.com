@@ -32,6 +32,7 @@ class LumawenApp extends StatelessWidget {
     final Widget page = switch (uri.path) {
       '/register' => RegisterScreen(api: api),
       '/confirm' => ConfirmScreen(api: api, token: token),
+      '/google-confirm' => GoogleConfirmScreen(api: api, token: token),
       '/forgot' => ForgotScreen(api: api),
       '/reset' => ResetScreen(api: api, token: token),
       '/login' => LoginScreen(api: api),

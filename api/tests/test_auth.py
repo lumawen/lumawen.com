@@ -55,8 +55,25 @@ def test_cookie_is_secure_in_production(client, monkeypatch):
 def test_cannot_sign_in_before_confirming(client):
     register(client, "new@example.com")
     r = web_login(client, "new@example.com")
-    assert r.status_code == 403
+    assert r.status_code == 401
     assert "Confirm your email" in r.json()["detail"]
+
+
+def test_login_does_not_reveal_whether_an_account_exists(client):
+    """Signing up an email with your own password, then signing in with it, must answer the
+    same whether or not that email already had a confirmed account."""
+    signed_up(client, "taken@example.com")
+    answers = []
+    for email in ("taken@example.com", "free@example.com"):
+        client.post("/api/auth/register", json={"email": email, "password": "probe pass 123"})
+        answers.append(_as_pair(web_login(client, email, "probe pass 123")))
+    answers.append(_as_pair(web_login(client, "never@example.com", "probe pass 123")))
+    assert answers[0] == answers[1] == answers[2]
+    assert answers[0][0] == 401
+
+
+def _as_pair(r):
+    return (r.status_code, r.json())
 
 
 def test_register_answers_the_same_for_existing_accounts(client):
@@ -154,10 +171,12 @@ def test_throttle_per_email_across_many_ips(client, app, monkeypatch):
         assert web_login(elsewhere, "spread@example.com", "new pass 1").status_code == 200
 
 
-def test_unconfirmed_login_hint_needs_the_right_password(client):
+def test_unconfirmed_login_answers_like_a_wrong_password(client):
     register(client, "pending@example.com")
-    assert web_login(client, "pending@example.com").status_code == 403
-    assert web_login(client, "pending@example.com", "wrong password").status_code == 401
+    assert (
+        web_login(client, "pending@example.com").json()
+        == web_login(client, "pending@example.com", "wrong password").json()
+    )
 
 
 def test_login_from_another_site_is_blocked(client):

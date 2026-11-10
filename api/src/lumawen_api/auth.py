@@ -595,6 +595,9 @@ def confirm_email(body: ConfirmIn, request: Request, response: Response, db: DB)
     return sign_in(db, user, body.client, body.device_name, response)
 
 
+LOGIN_FAILED = "Wrong email or password. Just signed up? Confirm your email first."
+
+
 @router.post("/login", response_model=LoginOut)
 def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginOut:
     if body.client == "web" and not _same_origin(request):
@@ -616,12 +619,11 @@ def login(body: LoginIn, request: Request, response: Response, db: DB) -> LoginO
     check = user.password_hash if user is not None else None
     if user is not None and check is None:
         check = _latest_pending_hash(db, user)
-    if not verify_password(check, body.password):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong email or password.")
-    if user.password_hash is None:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "Confirm your email first. Check your inbox for the link."
-        )
+    # An unconfirmed sign-up gets the same answer as a wrong password. Anyone can sign up
+    # any email with a password of their choosing, so a different answer here would tell
+    # them whether that email already had a confirmed account.
+    if not verify_password(check, body.password) or user.password_hash is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_FAILED)
 
     _attempt_succeeded(db, rules, user, ip)
     if needs_rehash(user.password_hash):

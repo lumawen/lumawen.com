@@ -157,7 +157,7 @@ def send_due(
         row = db.scalar(
             select(OutboxEmail)
             .where(OutboxEmail.status == "pending", OutboxEmail.send_after <= now)
-            .order_by(OutboxEmail.id)
+            .order_by(OutboxEmail.priority, OutboxEmail.id)
             .limit(1)
             .with_for_update(skip_locked=True)
         )
@@ -187,6 +187,32 @@ def send_due(
             time.sleep(pause)
     db.commit()
     return sent
+
+
+# Warn in the log (journalctl) when account and list emails back up: a sign-up flood, or SMTP
+# trouble. Newsletters are left out, since a big queue is normal right after one goes out.
+BACKLOG_EMAILS = 200
+BACKLOG_MINUTES = 15
+
+
+def check_backlog(db: Session) -> bool:
+    """Log a warning if non-newsletter email is piling up. Returns True when it is."""
+    count, oldest = db.execute(
+        select(func.count(), func.min(OutboxEmail.send_after)).where(
+            OutboxEmail.status == "pending",
+            OutboxEmail.kind != "newsletter",
+            OutboxEmail.send_after <= datetime.now(UTC),
+        )
+    ).one()
+    waiting = (datetime.now(UTC) - oldest).total_seconds() / 60 if oldest else 0.0
+    if count >= BACKLOG_EMAILS or waiting >= BACKLOG_MINUTES:
+        log.warning(
+            "email backlog: %s account/list emails due, oldest waiting %.0f minutes",
+            count,
+            waiting,
+        )
+        return True
+    return False
 
 
 # Sent and failed emails are deleted after this many days (they hold addresses and links).
@@ -241,8 +267,15 @@ def run_worker(session_factory: Callable[[], Session], loop: bool, interval: flo
     from .newsletters import purge_archived, queue_due_newsletters
 
     stop = _stop_on_signals() if loop else threading.Event()
-    last_purge = 0.0
+    last_purge = last_backlog_check = 0.0
     while not stop.is_set():
+        if time.monotonic() - last_backlog_check > 300:
+            try:
+                with session_factory() as db:
+                    check_backlog(db)
+            except Exception:
+                log.exception("could not check the email backlog")
+            last_backlog_check = time.monotonic()
         if time.monotonic() - last_purge > 3600:
             for purge in (
                 purge_throttle,

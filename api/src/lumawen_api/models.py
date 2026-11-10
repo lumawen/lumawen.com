@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -121,6 +122,15 @@ class EmailToken(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# Lower sends first, so a flood of sign-up emails can't delay a password reset for hours.
+OUTBOX_PRIORITY = {"reset": 0, "newsletter": 9}
+DEFAULT_PRIORITY = 5  # confirms, "already registered" notes, test sends
+
+
+def _outbox_priority(context) -> int:
+    return OUTBOX_PRIORITY.get(context.get_current_parameters().get("kind"), DEFAULT_PRIORITY)
+
+
 class OutboxEmail(Base):
     """Email waiting to be sent. The send worker delivers it (lumawen-admin send-emails)."""
 
@@ -130,6 +140,7 @@ class OutboxEmail(Base):
             "status IN ('pending', 'sent', 'failed')", name="email_outbox_status_valid"
         ),
         Index("email_outbox_due", "send_after", postgresql_where=text("status = 'pending'")),
+        Index("email_outbox_next", "priority", "id", postgresql_where=text("status = 'pending'")),
         Index("email_outbox_kind_created", "kind", "created_at"),
         # A newsletter goes to each address once, even if queueing runs twice.
         Index(
@@ -146,6 +157,12 @@ class OutboxEmail(Base):
     subject: Mapped[str] = mapped_column(String(200), nullable=False)
     body_text: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    priority: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        default=_outbox_priority,
+        server_default=text(str(DEFAULT_PRIORITY)),
+    )
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)

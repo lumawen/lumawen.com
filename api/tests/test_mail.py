@@ -75,3 +75,40 @@ def test_render_html_escapes_and_splits_footer():
     assert "&lt;b&gt;there&lt;/b&gt; &amp;" in html
     assert '<a href="https://lumawen.com/x"' in html  # trailing period not in the link
     assert "border-top" in html and 'href="https://u.example/t"' in html
+
+
+def _row(to: str, subject: str, kind: str, **extra) -> OutboxEmail:
+    return OutboxEmail(to_address=to, subject=subject, body_text="x", kind=kind, **extra)
+
+
+def _row(to: str, subject: str, kind: str, **extra) -> OutboxEmail:
+    return OutboxEmail(to_address=to, subject=subject, body_text="x", kind=kind, **extra)
+
+
+def test_resets_jump_ahead_of_a_signup_flood_and_newsletters_go_last(db):
+    for i in range(5):
+        db.add(_row(f"n{i}@example.com", "News", "newsletter"))
+    for i in range(30):
+        db.add(_row(f"f{i}@example.com", "Confirm", "list_confirm"))
+    db.add(_row("me@example.com", "Reset", "reset"))
+    db.commit()
+    captured: list[EmailMessage] = []
+    send_due(db, captured.append, limit=31)
+    assert captured[0]["To"] == "me@example.com"
+    assert [m["Subject"] for m in captured[1:]] == ["Confirm"] * 30
+    # The newsletters waited for everything else.
+    assert len(outbox(kind="newsletter")) == 5
+    assert all(r.status == "pending" for r in outbox(kind="newsletter"))
+
+
+def test_a_backlog_is_logged(db, caplog):
+    from datetime import UTC, datetime, timedelta
+
+    from lumawen_api.mail import check_backlog
+
+    assert check_backlog(db) is False
+    old = datetime.now(UTC) - timedelta(minutes=20)
+    db.add(_row("a@example.com", "s", "confirm", send_after=old))
+    db.commit()
+    assert check_backlog(db) is True
+    assert "email backlog" in caplog.text

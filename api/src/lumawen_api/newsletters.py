@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from .audit import record
 from .auth import DB, AdminUser, Email, WriterUser, normalize_email
 from .config import get_settings
-from .models import Newsletter, OutboxEmail, Subscriber
+from .models import OUTBOX_PRIORITY, Newsletter, OutboxEmail, Subscriber
 from .paging import Limit, Offset
 
 log = logging.getLogger("lumawen.newsletters")
@@ -201,6 +201,7 @@ def queue_due_newsletters(db: Session) -> int:
             literal(n.subject),
             literal(n.body_text + FOOTER) + unsubscribe,
             literal("newsletter"),
+            literal(OUTBOX_PRIORITY["newsletter"]),
             literal(n.id),
             unsubscribe,
         ).where(Subscriber.status == "subscribed")
@@ -213,6 +214,7 @@ def queue_due_newsletters(db: Session) -> int:
                         "subject",
                         "body_text",
                         "kind",
+                        "priority",
                         "newsletter_id",
                         "list_unsubscribe",
                     ],
